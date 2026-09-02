@@ -39,6 +39,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from download_transformer_ref import partition_status
 
@@ -174,7 +175,7 @@ DEFAULT_PROMPT = (
 
 # Per-strategy help, also surfaced in ``--help``.
 STRATEGY_HELP = {
-    "max_gpu": "4-stage int8 T2VA across 3 GPUs (no sharding/offload). Fastest multi-GPU.",
+    "max_gpu": "Int8 split across GPUs (no sharding/offload). T2VA: 3 GPUs; ref2va: transformer_ref alone on its card. Fastest multi-GPU.",
     "auto_offload": "Single GPU, int8 + block-level CPU streaming (24-32 GB VRAM).",
     "multi_gpu": "Conditioner on cuda:1, rest on cuda:0 (bf16 + CPU auto-offload).",
     "bf16_single": "Full bf16 on one 80 GB card with CPU auto-offload.",
@@ -312,6 +313,9 @@ def _build_max_gpu(config: Config):
     official workflow-block boundaries, moving only the required tensors between
     stages (pipeline state follows a single execution device).
     """
+    if config.reference_images:
+        return _build_max_gpu_ref2va(config)
+
     print(f"[MiniMax-H3]   transformer  -> cuda:{config.transformer_gpu} (int8, whole)")
     transformer = _load_int8_transformer(device_map={"": f"cuda:{config.transformer_gpu}"})
 
@@ -345,6 +349,89 @@ def _build_max_gpu(config: Config):
     audio_decoder.load_components(dtype=torch.bfloat16)
     audio_decoder.audio_vae.to(f"cuda:{config.decoder_gpu}")
     return conditioner, generator_pipe, video_decoder, audio_decoder
+
+
+@dataclass
+class _Ref2VASplit:
+    """A ref2va pipeline split across GPUs, one big model per card.
+
+    ``ref2va`` has one stage the ``t2va`` split lacks: a reference-encoder
+    (``vae_encoder``) that turns the references into conditioning latents before
+    denoising. The five workflow blocks map onto three GPUs so the whole
+    transformer card is free for the packed-attention allocation:
+
+    * ``conditioner``       — ``before_encode`` + ``text_encoder``  (conditioner GPU)
+    * ``reference_encoder`` — ``vae_encoder``                       (decoder GPU)
+    * ``denoiser``          — ``denoise`` (``transformer_ref``)     (transformer GPU)
+    * ``decoder``           — ``decode`` (video + audio)            (decoder GPU)
+    """
+
+    # ``ModularPipeline`` instances at runtime; typed ``Any`` so the staged
+    # driver in ``run_generation`` stays as lenient as the untyped ``pipe`` path.
+    conditioner: Any
+    reference_encoder: Any
+    denoiser: Any
+    decoder: Any
+    transformer_gpu: int
+    decoder_gpu: int
+
+
+def _build_max_gpu_ref2va(config: Config) -> "_Ref2VASplit":
+    """5-block int8 ref2va split: transformer_ref alone on its GPU for headroom.
+
+    Mirrors :func:`_build_max_gpu` but for the ``ref2va`` workflow, which adds a
+    reference-encoder stage. The conditioner (which also runs the reference
+    vision blocks) sits on one card, both VAEs share the decoder card for
+    reference-encoding *and* final decoding, and ``transformer_ref`` gets a whole
+    card to itself so the large packed-attention tensor has room.
+
+    ``get_workflow("ref2va")`` flattens the denoise block into seven
+    ``denoise.*`` steps and splits decode into ``decode.video`` / ``decode.audio``
+    at the top level, so a stage is carved out by trimming a fresh workflow copy
+    down to the blocks whose key matches that stage rather than popping one name.
+    """
+    tgpu, cgpu, dgpu = config.transformer_gpu, config.conditioner_gpu, config.decoder_gpu
+
+    print(f"[MiniMax-H3]   transformer_ref -> cuda:{tgpu} (int8, whole)")
+    transformer_ref = _load_int8_transformer_ref(device_map={"": f"cuda:{tgpu}"})
+
+    print(f"[MiniMax-H3]   conditioner     -> cuda:{cgpu} (int8, whole)")
+    text_encoder = _load_int8_text_encoder(device_map={"": f"cuda:{cgpu}"})
+
+    def _stage(keep) -> Any:
+        """A pipeline over just the workflow blocks whose key satisfies ``keep``."""
+        workflow = ModularPipeline.from_pretrained(MODEL_INDEX).blocks.get_workflow("ref2va")
+        for name in list(workflow.sub_blocks.keys()):
+            if not keep(name):
+                workflow.sub_blocks.pop(name)
+        return workflow.init_pipeline(MODEL_INDEX)
+
+    # Stage 1: references + prompt → normalized references + prompt embeddings.
+    # `before_encode` must lead (both `text_encoder` and `vae_encoder` read the
+    # references it normalizes), so it rides with the conditioner.
+    conditioner = _stage(lambda name: name in ("before_encode", "text_encoder"))
+    conditioner.update_components(text_encoder=text_encoder)
+    conditioner.load_components(dtype=torch.bfloat16)
+
+    # Stage 2: references → condition latents (video + audio VAEs on decoder GPU).
+    print(f"[MiniMax-H3]   reference VAEs   -> cuda:{dgpu}")
+    reference_encoder = _stage(lambda name: name == "vae_encoder")
+    reference_encoder.load_components(dtype=torch.bfloat16)
+    reference_encoder.vae.to(f"cuda:{dgpu}")
+    reference_encoder.audio_vae.to(f"cuda:{dgpu}")
+
+    # Stage 3: denoising on the dedicated transformer_ref GPU.
+    denoiser = _stage(lambda name: name.startswith("denoise"))
+    denoiser.update_components(transformer_ref=transformer_ref)
+    denoiser.load_components(dtype=torch.bfloat16)
+
+    # Stage 4: video + audio decoding (same VAEs, reused on the decoder GPU).
+    decoder = _stage(lambda name: name.startswith("decode"))
+    decoder.load_components(dtype=torch.bfloat16)
+    decoder.vae.to(f"cuda:{dgpu}")
+    decoder.audio_vae.to(f"cuda:{dgpu}")
+
+    return _Ref2VASplit(conditioner, reference_encoder, denoiser, decoder, tgpu, dgpu)
 
 
 def _build_bf16_single(config: Config):
@@ -447,17 +534,53 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
         generator=generator,
     )
 
+    # Multi-GPU ref2va split (max_gpu): five workflow blocks across three GPUs.
+    if isinstance(pipe, _Ref2VASplit):
+        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
+
+        references = [
+            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
+        ]
+        transformer_device = torch.device(f"cuda:{pipe.transformer_gpu}")
+        decoder_device = torch.device(f"cuda:{pipe.decoder_gpu}")
+
+        _print_run_header(config, "ref2va")
+
+        # Stage 1: prompt + references → normalized references + prompt embeds.
+        print("[MiniMax-H3] Encoding prompt + references on conditioner GPU …")
+        state = pipe.conditioner(
+            prompt=config.prompt,
+            references=references,
+            num_frames=config.num_frames,
+            height=config.height,
+            width=config.width,
+        )
+
+        # Stage 2: references → condition latents (returned on CPU by the encoder).
+        print("[MiniMax-H3] Encoding reference latents on decoder GPU …")
+        state = pipe.reference_encoder(state=state)
+
+        # Stage 3: denoise on the dedicated transformer GPU. Only prompt_embeds
+        # needs an explicit hop; the CPU condition latents are packed onto the
+        # transformer device by the layout step, as on a single card.
+        state = move_conditioning_state(state, transformer_device)
+        state = pipe.denoiser(
+            state=state,
+            num_inference_steps=config.steps,
+            generator=generator,
+        )
+
+        # Stage 4: decode video + audio on the decoder GPU.
+        state = move_latent_state(state, decoder_device)
+        state = pipe.decoder(state=state)
+        return {name: state.values[name] for name in outputs}, "ref2va"
+
     # 4-stage split pipeline (max_gpu): drive each stage, moving tensors across GPUs.
     if isinstance(pipe, tuple):
         if len(pipe) != 4:
             raise RuntimeError("Unsupported split pipeline; use --strategy max_gpu.")
         if config.image is not None:
             raise ValueError("The max_gpu split supports T2VA only; omit --image.")
-        if config.reference_images:
-            raise ValueError(
-                "The max_gpu split supports T2VA only; run reference images with "
-                "--strategy auto_offload (or bf16_single)."
-            )
         conditioner, generator_pipe, video_decoder, audio_decoder = pipe
 
         print("[MiniMax-H3] Encoding prompt on conditioner GPU …")
@@ -557,8 +680,8 @@ def parse_args() -> Config:
     )
 
 
-# Phase 1: reference images run on the single-pipeline strategies only.
-_REF2VA_STRATEGIES = ("auto_offload", "bf16_single")
+# Reference images run on the single-pipeline strategies or the multi-GPU split.
+_REF2VA_STRATEGIES = ("auto_offload", "bf16_single", "max_gpu")
 _MAX_REFERENCE_IMAGES = 9
 
 
