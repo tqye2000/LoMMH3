@@ -34,8 +34,14 @@ import argparse
 import json
 import math
 import os
-from dataclasses import dataclass
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from download_transformer_ref import partition_status
 
 # ---------------------------------------------------------------------------
 # HuggingFace environment — MUST be set before importing any HF module.
@@ -46,6 +52,9 @@ os.environ["HF_HOME"] = HF_HOME
 # snapshot, so the Hub is never contacted.
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# Reduce CUDA fragmentation for the large, variable-length attention allocations
+# ref2va + long clips produce. Must be set before torch initializes CUDA.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from diffusers.modular_pipelines.components_manager import ComponentsManager
@@ -92,6 +101,50 @@ SNAPSHOT_DIR = _resolve_snapshot(MODEL_CACHE)
 MODEL_ID = str(SNAPSHOT_DIR)                        # subfolder loads (transformer, vae, …)
 MODEL_INDEX = _localize_model_index(SNAPSHOT_DIR)   # offline modular index
 
+
+def _reference_partition_complete() -> bool:
+    """Return whether ``transformer_ref`` has a config and model weights."""
+    return partition_status(SNAPSHOT_DIR)[0]
+
+
+def _ensure_reference_partition() -> None:
+    """Download the ``ref2va`` transformer partition when it is not cached.
+
+    ``ref2va`` denoises against the separate ``transformer_ref/`` checkpoint
+    (~61.7 GiB), which the base snapshot does not ship. Generation remains offline;
+    a separate focused process temporarily enables Hub access for this partition.
+    """
+    if _reference_partition_complete():
+        return
+
+    downloader = Path(__file__).with_name("download_transformer_ref.py")
+    if not downloader.is_file():
+        raise FileNotFoundError(f"Reference partition downloader not found: {downloader}")
+
+    print(
+        "[MiniMax-H3] The transformer_ref partition is missing or incomplete; "
+        "starting its resumable download."
+    )
+    command = [
+        sys.executable,
+        str(downloader),
+        "--hf-home",
+        HF_HOME,
+        "--revision",
+        SNAPSHOT_DIR.name,
+    ]
+    completed = subprocess.run(command, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Automatic transformer_ref download failed. Resume it with:\n  "
+            + subprocess.list2cmdline(command)
+        )
+    if not _reference_partition_complete():
+        raise RuntimeError(
+            f"transformer_ref download finished but is incomplete: "
+            f"{SNAPSHOT_DIR / 'transformer_ref'}"
+        )
+
 # ---------------------------------------------------------------------------
 # Frame-count rules
 # ---------------------------------------------------------------------------
@@ -122,7 +175,7 @@ DEFAULT_PROMPT = (
 
 # Per-strategy help, also surfaced in ``--help``.
 STRATEGY_HELP = {
-    "max_gpu": "4-stage int8 T2VA across 3 GPUs (no sharding/offload). Fastest multi-GPU.",
+    "max_gpu": "Int8 split across GPUs (no sharding/offload). T2VA: 3 GPUs; ref2va: transformer_ref alone on its card. Fastest multi-GPU.",
     "auto_offload": "Single GPU, int8 + block-level CPU streaming (24-32 GB VRAM).",
     "multi_gpu": "Conditioner on cuda:1, rest on cuda:0 (bf16 + CPU auto-offload).",
     "bf16_single": "Full bf16 on one 80 GB card with CPU auto-offload.",
@@ -136,6 +189,7 @@ class Config:
 
     prompt: str = DEFAULT_PROMPT
     image: str | None = None          # first-frame image → FL2VA (else T2VA)
+    reference_images: list[str] = field(default_factory=list)  # subject refs → REF2VA
     num_frames: int = MAX_FRAMES      # 24 fps; snapped to 17*n+5 in [124, 345]
     height: int = 544                 # multiple of 32
     width: int = 960                  # multiple of 32; 960×544 ≈ 2.3× faster than 1344×768
@@ -185,6 +239,22 @@ def _load_int8_transformer(device_map: dict | None = None):
     )
 
 
+def _load_int8_transformer_ref(device_map: dict | None = None):
+    """Load the ``ref2va`` denoising transformer int8-quantised (bf16 for skips)."""
+    from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Transformer3DModel
+    from diffusers.quantizers.quantization_config import TorchAoConfig
+    from torchao.quantization import Int8WeightOnlyConfig
+
+    return MiniMaxH3Transformer3DModel.from_pretrained(
+        MODEL_ID, subfolder="transformer_ref", dtype=torch.bfloat16,
+        quantization_config=TorchAoConfig(
+            Int8WeightOnlyConfig(version=2), modules_to_not_convert=_TRANSFORMER_SKIP
+        ),
+        low_cpu_mem_usage=True,
+        device_map=device_map,
+    )
+
+
 def _load_int8_text_encoder(device_map: dict | None = None):
     """Load the Qwen3-VL conditioner int8-quantised (bf16 for skipped layers)."""
     from transformers import Qwen3VLForConditionalGeneration
@@ -224,6 +294,16 @@ def build_pipeline(config: Config):
     return builders[config.strategy](config)
 
 
+def _workflow_for(config: Config) -> str:
+    """Pick the modular workflow to load components for.
+
+    ``ref2va`` pulls the ``transformer_ref`` partition; ``fl2va`` pulls
+    ``transformer`` and also serves plain ``t2va`` (its keyframe blocks stay
+    dormant without an ``image``).
+    """
+    return "ref2va" if config.reference_images else "fl2va"
+
+
 def _build_max_gpu(config: Config):
     """4-stage int8 T2VA: one big model per GPU, no sharding, no CPU offload.
 
@@ -233,6 +313,9 @@ def _build_max_gpu(config: Config):
     official workflow-block boundaries, moving only the required tensors between
     stages (pipeline state follows a single execution device).
     """
+    if config.reference_images:
+        return _build_max_gpu_ref2va(config)
+
     print(f"[MiniMax-H3]   transformer  -> cuda:{config.transformer_gpu} (int8, whole)")
     transformer = _load_int8_transformer(device_map={"": f"cuda:{config.transformer_gpu}"})
 
@@ -268,12 +351,95 @@ def _build_max_gpu(config: Config):
     return conditioner, generator_pipe, video_decoder, audio_decoder
 
 
+@dataclass
+class _Ref2VASplit:
+    """A ref2va pipeline split across GPUs, one big model per card.
+
+    ``ref2va`` has one stage the ``t2va`` split lacks: a reference-encoder
+    (``vae_encoder``) that turns the references into conditioning latents before
+    denoising. The five workflow blocks map onto three GPUs so the whole
+    transformer card is free for the packed-attention allocation:
+
+    * ``conditioner``       — ``before_encode`` + ``text_encoder``  (conditioner GPU)
+    * ``reference_encoder`` — ``vae_encoder``                       (decoder GPU)
+    * ``denoiser``          — ``denoise`` (``transformer_ref``)     (transformer GPU)
+    * ``decoder``           — ``decode`` (video + audio)            (decoder GPU)
+    """
+
+    # ``ModularPipeline`` instances at runtime; typed ``Any`` so the staged
+    # driver in ``run_generation`` stays as lenient as the untyped ``pipe`` path.
+    conditioner: Any
+    reference_encoder: Any
+    denoiser: Any
+    decoder: Any
+    transformer_gpu: int
+    decoder_gpu: int
+
+
+def _build_max_gpu_ref2va(config: Config) -> "_Ref2VASplit":
+    """5-block int8 ref2va split: transformer_ref alone on its GPU for headroom.
+
+    Mirrors :func:`_build_max_gpu` but for the ``ref2va`` workflow, which adds a
+    reference-encoder stage. The conditioner (which also runs the reference
+    vision blocks) sits on one card, both VAEs share the decoder card for
+    reference-encoding *and* final decoding, and ``transformer_ref`` gets a whole
+    card to itself so the large packed-attention tensor has room.
+
+    ``get_workflow("ref2va")`` flattens the denoise block into seven
+    ``denoise.*`` steps and splits decode into ``decode.video`` / ``decode.audio``
+    at the top level, so a stage is carved out by trimming a fresh workflow copy
+    down to the blocks whose key matches that stage rather than popping one name.
+    """
+    tgpu, cgpu, dgpu = config.transformer_gpu, config.conditioner_gpu, config.decoder_gpu
+
+    print(f"[MiniMax-H3]   transformer_ref -> cuda:{tgpu} (int8, whole)")
+    transformer_ref = _load_int8_transformer_ref(device_map={"": f"cuda:{tgpu}"})
+
+    print(f"[MiniMax-H3]   conditioner     -> cuda:{cgpu} (int8, whole)")
+    text_encoder = _load_int8_text_encoder(device_map={"": f"cuda:{cgpu}"})
+
+    def _stage(keep) -> Any:
+        """A pipeline over just the workflow blocks whose key satisfies ``keep``."""
+        workflow = ModularPipeline.from_pretrained(MODEL_INDEX).blocks.get_workflow("ref2va")
+        for name in list(workflow.sub_blocks.keys()):
+            if not keep(name):
+                workflow.sub_blocks.pop(name)
+        return workflow.init_pipeline(MODEL_INDEX)
+
+    # Stage 1: references + prompt → normalized references + prompt embeddings.
+    # `before_encode` must lead (both `text_encoder` and `vae_encoder` read the
+    # references it normalizes), so it rides with the conditioner.
+    conditioner = _stage(lambda name: name in ("before_encode", "text_encoder"))
+    conditioner.update_components(text_encoder=text_encoder)
+    conditioner.load_components(dtype=torch.bfloat16)
+
+    # Stage 2: references → condition latents (video + audio VAEs on decoder GPU).
+    print(f"[MiniMax-H3]   reference VAEs   -> cuda:{dgpu}")
+    reference_encoder = _stage(lambda name: name == "vae_encoder")
+    reference_encoder.load_components(dtype=torch.bfloat16)
+    reference_encoder.vae.to(f"cuda:{dgpu}")
+    reference_encoder.audio_vae.to(f"cuda:{dgpu}")
+
+    # Stage 3: denoising on the dedicated transformer_ref GPU.
+    denoiser = _stage(lambda name: name.startswith("denoise"))
+    denoiser.update_components(transformer_ref=transformer_ref)
+    denoiser.load_components(dtype=torch.bfloat16)
+
+    # Stage 4: video + audio decoding (same VAEs, reused on the decoder GPU).
+    decoder = _stage(lambda name: name.startswith("decode"))
+    decoder.load_components(dtype=torch.bfloat16)
+    decoder.vae.to(f"cuda:{dgpu}")
+    decoder.audio_vae.to(f"cuda:{dgpu}")
+
+    return _Ref2VASplit(conditioner, reference_encoder, denoiser, decoder, tgpu, dgpu)
+
+
 def _build_bf16_single(config: Config):
     """Full bf16 on one 80 GB card with CPU auto-offload."""
     manager = ComponentsManager()
     manager.enable_auto_cpu_offload(device=config.device, memory_reserve_margin="12GB")
     pipe = ModularPipeline.from_pretrained(MODEL_INDEX, components_manager=manager)
-    pipe.load_components(workflow="fl2va", dtype=torch.bfloat16)
+    pipe.load_components(workflow=_workflow_for(config), dtype=torch.bfloat16)
     return pipe
 
 
@@ -299,18 +465,29 @@ def _build_auto_offload(config: Config):
     """Single GPU: int8 weights + block-level CPU streaming (24-32 GB VRAM)."""
     from diffusers.hooks.group_offloading import apply_group_offloading
 
+    ref2va = bool(config.reference_images)
     pipe = ModularPipeline.from_pretrained(MODEL_INDEX)
-    pipe.update_components(
-        transformer=_load_int8_transformer(),
-        text_encoder=_load_int8_text_encoder(),
-    )
-    pipe.load_components(workflow="fl2va", dtype=torch.bfloat16)
+    if ref2va:
+        pipe.update_components(
+            transformer_ref=_load_int8_transformer_ref(),
+            text_encoder=_load_int8_text_encoder(),
+        )
+    else:
+        pipe.update_components(
+            transformer=_load_int8_transformer(),
+            text_encoder=_load_int8_text_encoder(),
+        )
+    pipe.load_components(workflow=_workflow_for(config), dtype=torch.bfloat16)
+
+    # The denoiser partition ref2va reads is ``transformer_ref``; fl2va/t2va read
+    # ``transformer``. Stream whichever one this workflow loaded.
+    denoiser = pipe.transformer_ref if ref2va else pipe.transformer
 
     # Freeze so quantised tensors stay pinnable for streamed offload.
-    pipe.transformer.requires_grad_(False)
+    denoiser.requires_grad_(False)
     pipe.text_encoder.requires_grad_(False)
 
-    pipe.transformer.enable_group_offload(
+    denoiser.enable_group_offload(
         onload_device=torch.device(config.device),
         offload_device=torch.device("cpu"),
         offload_type="block_level",
@@ -332,6 +509,10 @@ def _build_auto_offload(config: Config):
 def _print_run_header(config: Config, mode: str) -> None:
     print(f"\n[MiniMax-H3] Mode:   {mode}")
     print(f"[MiniMax-H3] Prompt: {config.prompt}")
+    if config.reference_images:
+        print(f"[MiniMax-H3] Refs:   {len(config.reference_images)} image(s)")
+        for path in config.reference_images:
+            print(f"[MiniMax-H3]          - {path}")
     print(
         f"[MiniMax-H3] Frames: {config.num_frames} (~{config.duration_s:.1f}s @ {FPS}fps)"
         f"  Size: {config.width}×{config.height}  Steps: {config.steps}  Seed: {config.seed}\n"
@@ -339,7 +520,10 @@ def _print_run_header(config: Config, mode: str) -> None:
 
 
 def run_generation(pipe, config: Config) -> tuple[dict, str]:
-    """Run one generation and return ``(results, mode)``."""
+    """
+    Run one generation and return ``(results, mode)``.
+    ``results`` is a dict with keys ``videos``, ``audio``, and ``sampling_rate``.
+    """
     generator = torch.Generator().manual_seed(config.seed)
     outputs = ["videos", "audio", "sampling_rate"]
     kwargs: dict[str, object] = dict(
@@ -349,6 +533,47 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
         num_inference_steps=config.steps,
         generator=generator,
     )
+
+    # Multi-GPU ref2va split (max_gpu): five workflow blocks across three GPUs.
+    if isinstance(pipe, _Ref2VASplit):
+        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
+
+        references = [
+            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
+        ]
+        transformer_device = torch.device(f"cuda:{pipe.transformer_gpu}")
+        decoder_device = torch.device(f"cuda:{pipe.decoder_gpu}")
+
+        _print_run_header(config, "ref2va")
+
+        # Stage 1: prompt + references → normalized references + prompt embeds.
+        print("[MiniMax-H3] Encoding prompt + references on conditioner GPU …")
+        state = pipe.conditioner(
+            prompt=config.prompt,
+            references=references,
+            num_frames=config.num_frames,
+            height=config.height,
+            width=config.width,
+        )
+
+        # Stage 2: references → condition latents (returned on CPU by the encoder).
+        print("[MiniMax-H3] Encoding reference latents on decoder GPU …")
+        state = pipe.reference_encoder(state=state)
+
+        # Stage 3: denoise on the dedicated transformer GPU. Only prompt_embeds
+        # needs an explicit hop; the CPU condition latents are packed onto the
+        # transformer device by the layout step, as on a single card.
+        state = move_conditioning_state(state, transformer_device)
+        state = pipe.denoiser(
+            state=state,
+            num_inference_steps=config.steps,
+            generator=generator,
+        )
+
+        # Stage 4: decode video + audio on the decoder GPU.
+        state = move_latent_state(state, decoder_device)
+        state = pipe.decoder(state=state)
+        return {name: state.values[name] for name in outputs}, "ref2va"
 
     # 4-stage split pipeline (max_gpu): drive each stage, moving tensors across GPUs.
     if isinstance(pipe, tuple):
@@ -371,7 +596,13 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
 
     # Single-pipeline strategies (bf16_single / auto_offload).
     kwargs["prompt"] = config.prompt
-    if config.image is not None:
+    if config.reference_images:
+        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
+        kwargs["references"] = [
+            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
+        ]
+        mode = "ref2va"
+    elif config.image is not None:
         from diffusers.utils.loading_utils import load_image
         kwargs["image"] = load_image(config.image)
         mode = "fl2va"
@@ -410,6 +641,11 @@ def parse_args() -> Config:
     parser.add_argument("--prompt", default=defaults.prompt, help="Text prompt")
     parser.add_argument("--image", default=defaults.image, help="First-frame image → FL2VA mode")
     parser.add_argument(
+        "--reference-image", dest="reference_images", action="append", metavar="PATH",
+        help="Subject/style reference image → REF2VA mode. Repeat for up to 9 "
+             "images. Not combined with --image.",
+    )
+    parser.add_argument(
         "--frames", type=int, default=defaults.num_frames,
         help=f"Frame count @ {FPS}fps; snapped to 17*n+5 in [{MIN_FRAMES}, {MAX_FRAMES}]",
     )
@@ -427,9 +663,12 @@ def parse_args() -> Config:
     )
     args = parser.parse_args()
 
+    reference_images = args.reference_images or []
+
     return Config(
         prompt=args.prompt,
         image=args.image,
+        reference_images=reference_images,
         num_frames=args.frames,
         height=args.height,
         width=args.width,
@@ -441,8 +680,44 @@ def parse_args() -> Config:
     )
 
 
+# Reference images run on the single-pipeline strategies or the multi-GPU split.
+_REF2VA_STRATEGIES = ("auto_offload", "bf16_single", "max_gpu")
+_MAX_REFERENCE_IMAGES = 9
+
+
+def _validate_config(config: Config) -> None:
+    """Validate cross-field constraints, raising ``SystemExit`` on misuse."""
+    if not config.reference_images:
+        return
+    if config.image is not None:
+        raise SystemExit(
+            "[MiniMax-H3] --reference-image (ref2va) and --image (fl2va) are "
+            "different modes; pass only one."
+        )
+    if len(config.reference_images) > _MAX_REFERENCE_IMAGES:
+        raise SystemExit(
+            f"[MiniMax-H3] At most {_MAX_REFERENCE_IMAGES} reference images are "
+            f"supported; got {len(config.reference_images)}."
+        )
+    missing = [p for p in config.reference_images if not Path(p).is_file()]
+    if missing:
+        raise SystemExit(
+            "[MiniMax-H3] Reference image(s) not found: " + ", ".join(missing)
+        )
+    if config.strategy not in _REF2VA_STRATEGIES:
+        raise SystemExit(
+            f"[MiniMax-H3] Reference images need --strategy "
+            f"{' or '.join(_REF2VA_STRATEGIES)} (got '{config.strategy}')."
+        )
+
+
 def main() -> None:
+    run_started = time.perf_counter()
     config = parse_args()
+    _validate_config(config)
+
+    if config.reference_images:
+        _ensure_reference_partition()
 
     snapped = snap_num_frames(config.num_frames)
     if snapped != config.num_frames:
@@ -459,6 +734,8 @@ def main() -> None:
 
     results, mode = run_generation(pipe, config)
     save_output(results, config, mode)
+    total_minutes = (time.perf_counter() - run_started) / 60
+    print(f"[MiniMax-H3] Total generation time: {total_minutes:.2f} mins")
 
 
 if __name__ == "__main__":
