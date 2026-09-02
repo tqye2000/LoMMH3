@@ -1,6 +1,6 @@
 # MiniMax-H3 Local Test Harness
 
-This project is a minimal local test/experiment script for running the MiniMax-H3 model from a cached local snapshot under `D:\hf_models`.
+This project is a minimal local test/experiment script for running the MiniMax-H3 model from a cached local snapshot under `D:\models`.
 
 It is built around the Diffusers modular pipeline and is optimized for a multi-GPU setup, while also supporting single-GPU/offload modes.
 
