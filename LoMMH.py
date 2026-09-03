@@ -54,7 +54,9 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 # Reduce CUDA fragmentation for the large, variable-length attention allocations
 # ref2va + long clips produce. Must be set before torch initializes CUDA.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Assigned unconditionally (not setdefault) so an inherited value from the shell
+# environment can't disable expandable_segments and cause fragmentation OOMs.
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 from diffusers.modular_pipelines.components_manager import ComponentsManager
@@ -639,6 +641,11 @@ def parse_args() -> Config:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--prompt", default=defaults.prompt, help="Text prompt")
+    parser.add_argument(
+        "--prompt-file", dest="prompt_file", default=None, metavar="PATH",
+        help="Read the prompt from a UTF-8 text file (overrides --prompt). Use "
+             "this for non-ASCII prompts to avoid shell/code-page corruption.",
+    )
     parser.add_argument("--image", default=defaults.image, help="First-frame image → FL2VA mode")
     parser.add_argument(
         "--reference-image", dest="reference_images", action="append", metavar="PATH",
@@ -665,8 +672,14 @@ def parse_args() -> Config:
 
     reference_images = args.reference_images or []
 
+    # A UTF-8 prompt file bypasses shell/code-page corruption of non-ASCII text
+    # (e.g. CJK) that can otherwise inflate the token count and blow up memory.
+    prompt = args.prompt
+    if args.prompt_file:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8").strip()
+
     return Config(
-        prompt=args.prompt,
+        prompt=prompt,
         image=args.image,
         reference_images=reference_images,
         num_frames=args.frames,
