@@ -18,6 +18,7 @@ Generation is offline after the required model files are present. The script rew
 
 - `LoMMH.py` — main command-line generation script
 - `download_transformer_ref.py` — resumable downloader for the `ref2va` transformer partition
+- `save_video_frames.py` — saves the first and last frames of a video as PNG images
 - `run_local.ps1` — local PowerShell example using the reference-image workflow
 - `prompts/` — example UTF-8 prompts
 - `docs/` — prompt and reference-image notes
@@ -29,7 +30,7 @@ Use the virtual environment in this workspace. Diffusers from the main branch is
 
 ```powershell
 & '.venv\Scripts\python.exe' -m pip install -U git+https://github.com/huggingface/diffusers.git
-& '.venv\Scripts\python.exe' -m pip install -U transformers accelerate torchao av
+& '.venv\Scripts\python.exe' -m pip install -U transformers accelerate torchao av pillow
 ```
 
 The environment must also have a compatible CUDA-enabled PyTorch installation for GPU generation.
@@ -133,6 +134,26 @@ The included local example can also be run with:
 
 Extra arguments are forwarded by `run_local.ps1` to `LoMMH.py`.
 
+## Saving the first and last video frames
+
+Use `save_video_frames.py` with any video format supported by PyAV/FFmpeg:
+
+```powershell
+& '.venv\Scripts\python.exe' save_video_frames.py outputs\sample2.mp4
+```
+
+By default, the images are saved next to the video as
+`sample2_first.png` and `sample2_last.png`. Existing images with those names
+are replaced. To use another destination directory:
+
+```powershell
+& '.venv\Scripts\python.exe' save_video_frames.py outputs\sample2.mp4 `
+  --output-dir images\sample2
+```
+
+The script decodes the complete video stream rather than relying on duration
+metadata, ensuring the saved last image is the final decodable frame.
+
 ## Command-line options
 
 | Option | Description |
@@ -195,7 +216,7 @@ Generated files are written to `outputs\` by default. The default names are:
 - `minimax_h3_fl2va.mp4`
 - `minimax_h3_ref2va.mp4`
 
-Each output is an MP4 containing the generated video and audio. Use `--output-dir` and `--output` to customize the destination and filename.
+Each output is an MP4 containing the generated video and audio. A JSON run log with the same base filename is saved beside it (for example, `sample2.json`). The log records the prompt, input paths, requested and actual frame counts, generation settings, output path, command line, and runtime versions. Use `--output-dir` and `--output` to customize the destination and filename.
 
 ## Troubleshooting
 
