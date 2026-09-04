@@ -10,7 +10,8 @@ Generation is offline after the required model files are present. The script rew
 - First-frame image-to-video (`fl2va`) with `--image`
 - Subject/style reference-image generation (`ref2va`) with one or more `--reference-image` arguments
 - Int8 quantisation and CPU/group offloading for smaller GPUs
-- Explicit multi-GPU placement for the `max_gpu` strategy
+- Explicit multi-GPU placement for the `max_gpu` strategy (needs ~64 GB/GPU; see note below)
+- Context-parallel single-clip acceleration across GPUs with the `context_parallel` strategy (requires WSL2 or Linux — needs NCCL, which the Windows PyTorch wheels don't include)
 - MP4 output with the model-generated audio track
 - UTF-8 prompt files for prompts containing Chinese or other non-ASCII text
 
@@ -72,7 +73,7 @@ Example with two references:
   --output hl_output2.mp4
 ```
 
-`--reference-image` and `--image` are different modes and cannot be combined. Reference-image generation is supported by `auto_offload`, `bf16_single`, and `max_gpu`; it is not supported by the experimental `multi_gpu` layout.
+`--reference-image` and `--image` are different modes and cannot be combined. Reference-image generation is supported by `auto_offload`, `bf16_single`, `max_gpu`, and `context_parallel`; it is not supported by the experimental `multi_gpu` layout.
 
 ### Additional `ref2va` weights
 
@@ -166,7 +167,7 @@ metadata, ensuring the saved last image is the final decodable frame.
 | `--height N` / `--width N` | Output dimensions; use multiples of 32. |
 | `--steps N` | Number of denoising steps. Lower values are faster but lower quality. |
 | `--seed N` | Random seed. |
-| `--strategy NAME` | `max_gpu`, `auto_offload`, `bf16_single`, or `multi_gpu`. |
+| `--strategy NAME` | `max_gpu`, `context_parallel`, `auto_offload`, `bf16_single`, or `multi_gpu`. |
 | `--output-dir PATH` | Destination directory; defaults to `outputs`. |
 | `--output NAME` | MP4 filename inside `--output-dir`. `.mp4` is added if omitted. |
 
@@ -180,7 +181,8 @@ Run `--help` for the full argument descriptions and defaults:
 
 | Strategy | Intended hardware | Notes |
 | --- | --- | --- |
-| `max_gpu` | At least 3 CUDA GPUs | Int8 models are kept whole on dedicated GPUs. The transformer or `transformer_ref`, conditioner, and decoder/reference VAEs are placed separately. This avoids sharding a single transformer across devices. |
+| `max_gpu` | At least 3 CUDA GPUs, ~64 GB each | Int8 models are kept whole on dedicated GPUs. The transformer or `transformer_ref`, conditioner, and decoder/reference VAEs are placed separately. This avoids sharding a single transformer across devices. Stages run sequentially, so it lowers memory pressure but does not speed up a single clip. **`LoMMH.py` hard-rejects it (raises `SystemExit`) on any GPU below ~64 GB** — including 48 GB cards such as the RTX 6000 Ada this project was validated on — because the packed-attention allocation OOMs at high frame counts. On 40–48 GB cards use `context_parallel` (faster, needs WSL2/Linux) or `auto_offload` (single GPU + CPU streaming) instead. |
+| `context_parallel` | 2+ CUDA GPUs, ~40 GB each, **WSL2/Linux only** | Int8 weights plus Ulysses context parallelism: one clip's denoise sequence is split across every GPU, so all cards work on the same clip at once. This is the strategy that lowers single-clip latency. The script spawns one worker process per GPU itself (`torch.multiprocessing`), so it is launched as plain `python` (see `run_local_cp.sh`). Needs NCCL, which the Windows PyTorch wheels lack; run it under WSL2 or native Linux. |
 | `auto_offload` | One 24–32 GB GPU plus system RAM | Int8 weights with block-level transformer and leaf-level text-encoder CPU streaming. Recommended for smaller VRAM. |
 | `bf16_single` | One large, typically 80 GB GPU | Full BF16 components with automatic CPU offload. |
 | `multi_gpu` | Experimental legacy layout | Places the conditioner on `cuda:1` and the remaining T2VA pipeline on `cuda:0`. Use `max_gpu` for the supported explicit multi-GPU runner. |
@@ -192,6 +194,78 @@ For `max_gpu`, the default placement is:
 - `cuda:2` — video/audio VAEs and reference encoder
 
 Change the GPU indices in the `Config` defaults in `LoMMH.py` if the workstation uses a different layout.
+
+### Context parallelism (`context_parallel`)
+
+`context_parallel` is the strategy for making a single clip faster by using every
+GPU at once. MiniMax-H3's transformer supports Ulysses context parallelism, which
+splits the packed video/audio sequence across the GPUs so the denoise loop — the
+bulk of the run time — is computed in parallel. Each rank int8-quantises the
+model onto its own card (about 31 GB), so cards of roughly 40 GB or more are
+needed; the conditioner and decoder run per rank and are loaded and freed around
+the denoise so each stage peaks near 31 GB.
+
+Because it is a distributed run, the script spawns one worker process per GPU
+itself using `torch.multiprocessing`, and each worker builds an explicit
+rendezvous store with `use_libuv=False` (the Windows PyTorch wheels are built
+without libuv). It is therefore launched as a plain `python` process, not through
+`torchrun`.
+
+**Windows PyTorch wheels have no NCCL**, and Ulysses context parallelism needs
+NCCL's `all_to_all` collective, so `context_parallel` cannot run natively on
+Windows (it fails immediately with "Distributed package doesn't have NCCL
+built in"). Run it under **WSL2** instead, where the PyPI Linux `torch` wheel
+bundles NCCL:
+
+```powershell
+.\run_local_cp.ps1                       # Windows (works for other strategies; NCCL-less here)
+wsl -d Ubuntu -- bash run_local_cp.sh    # WSL2 (context_parallel actually runs)
+```
+
+or invoke it directly from inside WSL2; the GPU count defaults to
+`torch.cuda.device_count()` and can be overridden with the `CP_WORLD_SIZE`
+environment variable:
+
+```bash
+HF_HOME=/home/<user>/hf_models CP_WORLD_SIZE=4 \
+  ~/minimax-venv/bin/python LoMMH.py \
+  --strategy context_parallel \
+  --reference-image project_2/hl_3.jpg \
+  --reference-image project_2/chongda_a.jpg \
+  --prompt-file project_2/prompt.txt \
+  --frames 345 --width 704 --height 384 --steps 30 \
+  --output hl_part1_cp.mp4
+```
+
+All ranks run the same request with the same seed; only rank 0 prints progress
+and writes the MP4 and its run log.
+
+#### WSL2 setup notes
+
+WSL2's paravirtualized GPU doesn't implement some CUDA APIs that both PyTorch
+and NCCL assume are available by default, so two allocator settings are
+required (both are applied automatically in `LoMMH.py` when it detects WSL):
+
+- `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.8` instead of
+  `expandable_segments:True` — the latter relies on CUDA virtual-memory APIs
+  (`cuMemCreate`/`cuMemMap`) that WSL2 doesn't support and fails with spurious
+  OOM errors.
+- `NCCL_CUMEM_ENABLE=0` — NCCL ≥2.18 allocates its channel buffers through the
+  same CUDA VMM (`cuMem*`) APIs by default, which aborts the first collective
+  (`Cuda failure 999 'unknown error'`) on WSL2. Disabling it forces NCCL onto
+  the legacy `cudaMalloc` path, which works. `NCCL_P2P_DISABLE=1` is also set
+  because WSL2 lacks the CUDA IPC/peer-access APIs NCCL's P2P transport needs.
+
+One-time environment setup: build a Linux Python venv inside WSL2 with
+`bash wsl_setup.sh` (installs `torch` from PyPI — the Linux wheel is CUDA +
+NCCL-enabled — plus `diffusers`, `transformers`, etc.). The model cache under
+`HF_HOME` (e.g. `D:\hf_models`, visible in WSL2 at `/mnt/d/hf_models`) works as
+is, but loading it over the `/mnt/d` 9p mount is slow (tens of minutes for the
+~190 GB MiniMax-H3 cache). For faster iteration, stage it onto WSL2's native
+ext4 filesystem once with `bash stage_cache_wsl.sh` (copies into
+`~/hf_models`, dereferencing the Hub's symlinks); `run_local_cp.sh`
+automatically prefers the ext4 copy when present and falls back to `/mnt/d`
+otherwise.
 
 ## Frame counts and resolution
 

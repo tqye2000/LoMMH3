@@ -34,6 +34,7 @@ import argparse
 import json
 import math
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -47,7 +48,9 @@ from download_transformer_ref import partition_status
 # ---------------------------------------------------------------------------
 # HuggingFace environment — MUST be set before importing any HF module.
 # ---------------------------------------------------------------------------
-HF_HOME = r"D:\hf_models"
+# Defaults to the Windows model store but honours an externally-set HF_HOME so
+# the same script runs under WSL/Linux by pointing at e.g. /mnt/d/hf_models.
+HF_HOME = os.environ.get("HF_HOME", r"D:\hf_models")
 os.environ["HF_HOME"] = HF_HOME
 # Fully offline: the localized index (below) points every component at the local
 # snapshot, so the Hub is never contacted.
@@ -55,9 +58,30 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 # Reduce CUDA fragmentation for the large, variable-length attention allocations
 # ref2va + long clips produce. Must be set before torch initializes CUDA.
-# Assigned unconditionally (not setdefault) so an inherited value from the shell
-# environment can't disable expandable_segments and cause fragmentation OOMs.
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# expandable_segments relies on CUDA virtual-memory APIs (cuMemCreate/cuMemMap)
+# that WSL2's paravirtualized GPU does not implement, so under WSL it fails with
+# spurious "memory mapping failed with OOM" errors even with tens of GB free.
+# Enable it only off-WSL; on WSL honour an inherited value or leave the default
+# allocator in place.
+_IS_WSL = bool(os.environ.get("WSL_DISTRO_NAME")) or "microsoft" in platform.release().lower()
+if _IS_WSL:
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "garbage_collection_threshold:0.8")
+    # NCCL >= 2.18 allocates its channel/transport buffers through the CUDA VMM
+    # cuMem* APIs (cuMemCreate/cuMemMap) by default. WSL2's paravirtualized GPU
+    # does not implement those APIs, so NCCL aborts while setting up channels
+    # (channel.cc -> "unhandled cuda error / Cuda failure 999") on the first
+    # multi-GPU collective (Ulysses all_to_all). Forcing the legacy cudaMalloc
+    # path with NCCL_CUMEM_ENABLE=0 is the actual fix on WSL2. This is the same
+    # class of limitation that makes PYTORCH expandable_segments fail above.
+    os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+    # WSL2 also lacks the CUDA IPC / peer-to-peer path, so keep NCCL off its P2P
+    # transport; the shared-memory transport works once cuMem is disabled and is
+    # far faster than the socket fallback, so leave SHM enabled.
+    os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+else:
+    # Assigned unconditionally (not setdefault) so an inherited value from the
+    # shell environment can't disable expandable_segments and cause OOMs.
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 from diffusers.modular_pipelines.components_manager import ComponentsManager
@@ -67,7 +91,7 @@ from diffusers.utils.export_utils import encode_video
 # ---------------------------------------------------------------------------
 # Model location
 # ---------------------------------------------------------------------------
-MODEL_CACHE = Path(r"D:\hf_models\hub\models--MiniMaxAI--MiniMax-H3")
+MODEL_CACHE = Path(HF_HOME) / "hub" / "models--MiniMaxAI--MiniMax-H3"
 
 
 def _resolve_snapshot(cache: Path) -> Path:
@@ -179,6 +203,7 @@ DEFAULT_PROMPT = (
 # Per-strategy help, also surfaced in ``--help``.
 STRATEGY_HELP = {
     "max_gpu": "Int8 split across GPUs (no sharding/offload). T2VA: 3 GPUs; ref2va: transformer_ref alone on its card. Fastest multi-GPU.",
+    "context_parallel": "Int8 + Ulysses context parallel: one clip's denoise split across all GPUs (torchrun). Lowest single-clip latency on 40 GB+ cards.",
     "auto_offload": "Single GPU, int8 + block-level CPU streaming (24-32 GB VRAM).",
     "multi_gpu": "Conditioner on cuda:1, rest on cuda:0 (bf16 + CPU auto-offload).",
     "bf16_single": "Full bf16 on one 80 GB card with CPU auto-offload.",
@@ -287,6 +312,114 @@ def move_latent_state(state, device: torch.device):
     return state
 
 
+# ---------------------------------------------------------------------------
+# Distributed / context-parallel helpers
+# ---------------------------------------------------------------------------
+# ``max_gpu`` keeps each ~31 GB int8 model whole on one card; the packed-attention
+# allocation at high frame counts needs roughly this much headroom on top, so
+# anything smaller is steered to context_parallel / auto_offload instead of
+# OOM-ing mid-denoise.
+_MAX_GPU_MIN_BYTES = 64 * 1024**3
+
+
+def _require_max_gpu_memory(config: Config) -> None:
+    """Reject ``max_gpu`` on cards too small to hold a whole int8 model + attention."""
+    gpus = sorted({config.transformer_gpu, config.conditioner_gpu, config.decoder_gpu})
+    small = [
+        (i, torch.cuda.get_device_properties(i).total_memory)
+        for i in gpus
+        if torch.cuda.get_device_properties(i).total_memory < _MAX_GPU_MIN_BYTES
+    ]
+    if small:
+        detail = ", ".join(f"cuda:{i} {total / 1024**3:.0f} GiB" for i, total in small)
+        raise SystemExit(
+            "[MiniMax-H3] --strategy max_gpu keeps each ~31 GB int8 model whole on one "
+            "card and needs ~64 GB per GPU to survive the packed-attention allocation "
+            f"at high frame counts; found {detail}. Use --strategy context_parallel "
+            "(splits one clip across GPUs) or --strategy auto_offload (single GPU + CPU "
+            "streaming)."
+        )
+
+
+def _dist_is_active() -> bool:
+    """Return whether the process was launched under ``torchrun``."""
+    return "RANK" in os.environ and "WORLD_SIZE" in os.environ
+
+
+def _is_main_process() -> bool:
+    """Rank 0 (or a plain single-process run) does the printing and saving."""
+    return int(os.environ.get("RANK", "0")) == 0
+
+
+def _dist_setup() -> tuple[int, int, int]:
+    """Bind this rank to its GPU and join the process group.
+
+    The rank / world size / master endpoint are read from the environment that
+    :func:`_cp_worker` sets before calling this. The store is built explicitly
+    with ``use_libuv=False`` because the Windows PyTorch wheels are compiled
+    without libuv and would otherwise abort; the combined ``gloo`` + ``nccl``
+    backend keeps the CPU-side collectives ``ulysses_anything`` issues off the
+    CUDA sync path.
+    """
+    from datetime import timedelta
+
+    import torch.distributed as dist
+
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ.get("LOCAL_RANK", rank))
+    torch.cuda.set_device(local_rank)
+    if not dist.is_initialized():
+        store = dist.TCPStore(  # type: ignore[attr-defined]
+            os.environ.get("MASTER_ADDR", "127.0.0.1"),
+            int(os.environ.get("MASTER_PORT", "29500")),
+            world_size,
+            is_master=(rank == 0),
+            timeout=timedelta(seconds=1800),
+            use_libuv=False,
+        )
+        dist.init_process_group(
+            backend="cpu:gloo,cuda:nccl",
+            store=store,
+            rank=rank,
+            world_size=world_size,
+        )
+    return rank, world_size, local_rank
+
+
+def _dist_cleanup() -> None:
+    """Tear the process group down after a distributed run."""
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
+
+
+def _free_cuda() -> None:
+    """Release a just-freed stage's memory before loading the next one."""
+    import gc
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+@dataclass
+class _ContextParallelPlan:
+    """Marker that ``run_generation`` should drive the context-parallel path.
+
+    The pipeline is (re)built stage by stage inside the driver because the
+    conditioner and the denoiser transformer are ~31 GB each at int8 and cannot
+    both be resident on one card; the driver loads, runs and frees each stage in
+    turn. Only the transformer runs context-parallel across ranks.
+    """
+
+    rank: int
+    world_size: int
+    local_rank: int
+    device: torch.device
+
+
 def build_pipeline(config: Config):
     """Load MiniMax-H3 according to ``config.strategy``."""
     builders = {
@@ -294,6 +427,7 @@ def build_pipeline(config: Config):
         "bf16_single": _build_bf16_single,
         "multi_gpu": _build_multi_gpu,
         "auto_offload": _build_auto_offload,
+        "context_parallel": _build_context_parallel,
     }
     return builders[config.strategy](config)
 
@@ -317,6 +451,7 @@ def _build_max_gpu(config: Config):
     official workflow-block boundaries, moving only the required tensors between
     stages (pipeline state follows a single execution device).
     """
+    _require_max_gpu_memory(config)
     if config.reference_images:
         return _build_max_gpu_ref2va(config)
 
@@ -510,6 +645,124 @@ def _build_auto_offload(config: Config):
     return pipe
 
 
+def _cp_workflow_stage(workflow_name: str, keep) -> Any:
+    """A fresh pipeline over just the workflow blocks whose key satisfies ``keep``."""
+    workflow = ModularPipeline.from_pretrained(MODEL_INDEX).blocks.get_workflow(workflow_name)
+    for name in list(workflow.sub_blocks.keys()):
+        if not keep(name):
+            workflow.sub_blocks.pop(name)
+    return workflow.init_pipeline(MODEL_INDEX)
+
+
+def _enable_context_parallel(transformer, world_size: int) -> None:
+    """Split the denoiser's attention sequence across ``world_size`` GPUs.
+
+    Ulysses all-to-all over MiniMax-H3's 56 heads (divisible by 2/4).
+    ``ulysses_anything`` is required because the model packs one unpadded
+    sequence whose length is not a multiple of the rank count.
+    """
+    try:
+        from diffusers.models._modeling_parallel import ContextParallelConfig
+    except ImportError:  # newer top-level export
+        from diffusers import ContextParallelConfig  # type: ignore[attr-defined]
+
+    transformer.set_attention_backend("_native_cudnn")
+    transformer.enable_parallelism(
+        config=ContextParallelConfig(ulysses_degree=world_size, ulysses_anything=True)
+    )
+
+
+def _build_context_parallel(config: Config) -> "_ContextParallelPlan":
+    """Join the per-rank process group; stages are loaded lazily in the driver.
+
+    Only ever reached inside a worker spawned by :func:`_cp_spawn`, where the
+    distributed environment is already set.
+    """
+    if not _dist_is_active():
+        raise SystemExit(
+            "[MiniMax-H3] context_parallel must be launched via _cp_spawn; run it "
+            "with `python LoMMH.py --strategy context_parallel …` or run_local_cp.ps1."
+        )
+    if config.image is not None:
+        raise ValueError(
+            "[MiniMax-H3] context_parallel supports t2va and ref2va only; omit --image."
+        )
+    rank, world_size, local_rank = _dist_setup()
+    device = torch.device(f"cuda:{local_rank}")
+    return _ContextParallelPlan(rank, world_size, local_rank, device)
+
+
+def _cp_worker(
+    local_rank: int,
+    world_size: int,
+    config: Config,
+    requested_num_frames: int,
+    run_started: float,
+) -> None:
+    """One context-parallel rank: set up the group, generate, rank 0 saves.
+
+    Spawned by :func:`_cp_spawn` (one process per GPU). Every rank runs the whole
+    pipeline with the same seed so the denoise inputs match; only the transformer
+    is collective across ranks.
+    """
+    os.environ["RANK"] = str(local_rank)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["LOCAL_RANK"] = str(local_rank)
+    # Force loopback so a hostname inherited from the shell (which does not
+    # resolve to a bindable local address) can't break the rendezvous store.
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ.setdefault("MASTER_PORT", "29500")
+
+    _dist_setup()
+    main_proc = _is_main_process()
+
+    if main_proc:
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[MiniMax-H3] Loading model with strategy='{config.strategy}' …")
+
+    pipe = build_pipeline(config)
+    results, mode = run_generation(pipe, config)
+
+    if main_proc:
+        save_output(results, config, mode, requested_num_frames)
+        total_minutes = (time.perf_counter() - run_started) / 60
+        print(f"[MiniMax-H3] Total generation time: {total_minutes:.2f} mins")
+
+    _dist_cleanup()
+
+
+def _cp_spawn(config: Config, requested_num_frames: int, run_started: float) -> None:
+    """Launch one worker process per GPU for a context-parallel run.
+
+    Spawns the workers directly instead of using ``torchrun`` so the rendezvous
+    store is the explicit ``use_libuv=False`` one built in :func:`_dist_setup`;
+    the Windows PyTorch wheels are compiled without libuv and ``torchrun``'s
+    agent store cannot be told to skip it.
+    """
+    import torch.multiprocessing as mp
+
+    if config.image is not None:
+        raise ValueError(
+            "[MiniMax-H3] context_parallel supports t2va and ref2va only; omit --image."
+        )
+    world_size = int(os.environ.get("CP_WORLD_SIZE", "0")) or torch.cuda.device_count()
+    if world_size < 2:
+        raise SystemExit(
+            "[MiniMax-H3] context_parallel needs at least 2 CUDA GPUs; found "
+            f"{world_size}. Use --strategy auto_offload instead."
+        )
+    print(
+        f"[MiniMax-H3] Spawning {world_size} context-parallel worker(s) "
+        f"(ulysses_degree={world_size}); one clip split per denoise step."
+    )
+    mp.spawn(  # type: ignore[attr-defined]
+        _cp_worker,
+        args=(world_size, config, requested_num_frames, run_started),
+        nprocs=world_size,
+        join=True,
+    )
+
+
 def _print_run_header(config: Config, mode: str) -> None:
     print(f"\n[MiniMax-H3] Mode:   {mode}")
     print(f"[MiniMax-H3] Prompt: {config.prompt}")
@@ -521,6 +774,120 @@ def _print_run_header(config: Config, mode: str) -> None:
         f"[MiniMax-H3] Frames: {config.num_frames} (~{config.duration_s:.1f}s @ {FPS}fps)"
         f"  Size: {config.width}×{config.height}  Steps: {config.steps}  Seed: {config.seed}\n"
     )
+
+
+def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple[dict, str]:
+    """Drive the staged context-parallel pipeline on one GPU per rank.
+
+    Every rank runs the whole pipeline with the same seed, so the conditioner and
+    decoder produce identical tensors on each card; only the transformer denoise
+    is split across ranks (its ``_cp_plan`` shards the packed sequence). The
+    ~31 GB int8 conditioner and denoiser are loaded and freed in turn so each
+    stage peaks near 31 GB, well within a 48 GB card.
+    """
+    outputs = ["videos", "audio", "sampling_rate"]
+    device = plan.device
+    generator = torch.Generator().manual_seed(config.seed)
+    ref2va = bool(config.reference_images)
+    mode = "ref2va" if ref2va else "t2va"
+    workflow_name = "ref2va" if ref2va else "t2va"
+    main_proc = _is_main_process()
+
+    references = None
+    if ref2va:
+        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
+
+        references = [
+            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
+        ]
+
+    if main_proc:
+        _print_run_header(config, mode)
+
+    # Stage 1: prompt (+ references) -> prompt embeddings. Run on every rank so
+    # the denoise inputs are identical; only the transformer is collective.
+    if main_proc:
+        print("[MiniMax-H3] Encoding prompt on each rank …")
+    text_encoder = _load_int8_text_encoder(device_map={"": str(device)})
+    if ref2va:
+        conditioner = _cp_workflow_stage(
+            workflow_name, lambda name: name in ("before_encode", "text_encoder")
+        )
+    else:
+        conditioner = _cp_workflow_stage(workflow_name, lambda name: name == "text_encoder")
+    conditioner.update_components(text_encoder=text_encoder)
+    conditioner.load_components(dtype=torch.bfloat16)
+    if ref2va:
+        state = conditioner(
+            prompt=config.prompt,
+            references=references,
+            num_frames=config.num_frames,
+            height=config.height,
+            width=config.width,
+        )
+    else:
+        state = conditioner(prompt=config.prompt)
+    del conditioner, text_encoder
+    _free_cuda()
+
+    # Stage 1b (ref2va only): references -> condition latents.
+    if ref2va:
+        reference_encoder = _cp_workflow_stage(workflow_name, lambda name: name == "vae_encoder")
+        reference_encoder.load_components(dtype=torch.bfloat16)
+        reference_encoder.vae.to(device)
+        reference_encoder.audio_vae.to(device)
+        state = reference_encoder(state=state)
+        del reference_encoder
+        _free_cuda()
+
+    # Stage 2: context-parallel denoise on the per-rank transformer.
+    if main_proc:
+        print("[MiniMax-H3] Denoising (context-parallel) …")
+    if ref2va:
+        transformer = _load_int8_transformer_ref(device_map={"": str(device)})
+        denoiser = _cp_workflow_stage(workflow_name, lambda name: name.startswith("denoise"))
+        denoiser.update_components(transformer_ref=transformer)
+    else:
+        transformer = _load_int8_transformer(device_map={"": str(device)})
+        denoiser = _cp_workflow_stage(
+            workflow_name,
+            lambda name: name not in ("text_encoder", "decode.video", "decode.audio"),
+        )
+        denoiser.update_components(transformer=transformer)
+    denoiser.load_components(dtype=torch.bfloat16)
+    _enable_context_parallel(transformer, plan.world_size)
+
+    state = move_conditioning_state(state, device)
+    if ref2va:
+        state = denoiser(state=state, num_inference_steps=config.steps, generator=generator)
+    else:
+        state = denoiser(
+            state=state,
+            num_frames=config.num_frames,
+            height=config.height,
+            width=config.width,
+            num_inference_steps=config.steps,
+            generator=generator,
+        )
+    del denoiser, transformer
+    _free_cuda()
+
+    # Stage 3: decode video + audio on the same card.
+    if ref2va:
+        decoder = _cp_workflow_stage(workflow_name, lambda name: name.startswith("decode"))
+    else:
+        decoder = _cp_workflow_stage(
+            workflow_name, lambda name: name in ("decode.video", "decode.audio")
+        )
+    decoder.load_components(dtype=torch.bfloat16)
+    decoder.vae.to(device)
+    decoder.audio_vae.to(device)
+    state = move_latent_state(state, device)
+    state = decoder(state=state)
+    results = {name: state.values[name] for name in outputs}
+    del decoder
+    _free_cuda()
+    return results, mode
 
 
 def run_generation(pipe, config: Config) -> tuple[dict, str]:
@@ -537,6 +904,11 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
         num_inference_steps=config.steps,
         generator=generator,
     )
+
+    # Context-parallel single-clip split (context_parallel): every rank runs the
+    # pipeline; only the transformer's attention is split across GPUs.
+    if isinstance(pipe, _ContextParallelPlan):
+        return _run_context_parallel(pipe, config)
 
     # Multi-GPU ref2va split (max_gpu): five workflow blocks across three GPUs.
     if isinstance(pipe, _Ref2VASplit):
@@ -745,8 +1117,8 @@ def parse_args() -> Config:
     )
 
 
-# Reference images run on the single-pipeline strategies or the multi-GPU split.
-_REF2VA_STRATEGIES = ("auto_offload", "bf16_single", "max_gpu")
+# Reference images run on the single-pipeline strategies or the multi-GPU splits.
+_REF2VA_STRATEGIES = ("auto_offload", "bf16_single", "max_gpu", "context_parallel")
 _MAX_REFERENCE_IMAGES = 9
 
 
@@ -781,9 +1153,6 @@ def main() -> None:
     config = parse_args()
     _validate_config(config)
 
-    if config.reference_images:
-        _ensure_reference_partition()
-
     requested_num_frames = config.num_frames
     snapped = snap_num_frames(config.num_frames)
     if snapped != config.num_frames:
@@ -792,6 +1161,15 @@ def main() -> None:
             f"(valid 17*n+5 in [{MIN_FRAMES}, {MAX_FRAMES}], ~{snapped / FPS:.1f}s)"
         )
         config.num_frames = snapped
+
+    if config.reference_images:
+        _ensure_reference_partition()
+
+    # Context parallel runs one worker process per GPU; each worker owns the
+    # process group, generation, and (rank 0) saving.
+    if config.strategy == "context_parallel":
+        _cp_spawn(config, requested_num_frames, run_started)
+        return
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
