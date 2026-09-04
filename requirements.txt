@@ -1,0 +1,11 @@
+# PyTorch is listed without a version so pip can select the appropriate Windows build.
+torch
+
+# MiniMax-H3 modular pipeline support currently requires Diffusers main.
+git+https://github.com/huggingface/diffusers.git
+
+transformers
+accelerate
+torchao
+av
+Pillow
