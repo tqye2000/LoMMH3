@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,9 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 # Reduce CUDA fragmentation for the large, variable-length attention allocations
 # ref2va + long clips produce. Must be set before torch initializes CUDA.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Assigned unconditionally (not setdefault) so an inherited value from the shell
+# environment can't disable expandable_segments and cause fragmentation OOMs.
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 from diffusers.modular_pipelines.components_manager import ComponentsManager
@@ -188,6 +191,7 @@ class Config:
     """All user-tunable settings for a single generation run."""
 
     prompt: str = DEFAULT_PROMPT
+    prompt_file: str | None = None
     image: str | None = None          # first-frame image → FL2VA (else T2VA)
     reference_images: list[str] = field(default_factory=list)  # subject refs → REF2VA
     num_frames: int = MAX_FRAMES      # 24 fps; snapped to 17*n+5 in [124, 345]
@@ -613,8 +617,13 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
     return pipe(**kwargs, output=outputs), mode
 
 
-def save_output(results: dict, config: Config, mode: str) -> Path:
-    """Mux video + audio into an MP4 and return its path."""
+def save_output(
+    results: dict,
+    config: Config,
+    mode: str,
+    requested_num_frames: int | None = None,
+) -> Path:
+    """Mux video + audio into an MP4, save its run log, and return its path."""
     filename = config.output_filename or f"minimax_h3_{mode}.mp4"
     if not filename.lower().endswith(".mp4"):
         filename += ".mp4"
@@ -627,6 +636,50 @@ def save_output(results: dict, config: Config, mode: str) -> Path:
         audio_sample_rate=results["sampling_rate"],
     )
     print(f"\n[MiniMax-H3] Saved → {out_path.resolve()}")
+
+    log_path = out_path.with_suffix(".json")
+    run_log = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "parameters": {
+            "prompt": config.prompt,
+            "prompt_file": config.prompt_file,
+            "image": config.image,
+            "reference_images": config.reference_images,
+            "requested_frames": (
+                config.num_frames
+                if requested_num_frames is None
+                else requested_num_frames
+            ),
+            "frames": config.num_frames,
+            "fps": FPS,
+            "duration_seconds": config.duration_s,
+            "height": config.height,
+            "width": config.width,
+            "steps": config.steps,
+            "seed": config.seed,
+            "strategy": config.strategy,
+            "device": config.device,
+            "transformer_gpu": config.transformer_gpu,
+            "conditioner_gpu": config.conditioner_gpu,
+            "decoder_gpu": config.decoder_gpu,
+            "output_dir": str(config.output_dir),
+            "output_filename": filename,
+            "output_path": str(out_path.resolve()),
+        },
+        "command_line": [str(Path(sys.executable).resolve()), *sys.argv[1:]],
+        "runtime": {
+            "python": sys.version,
+            "torch": torch.__version__,
+            "cuda_version": torch.version.cuda,
+            "cuda_device_count": torch.cuda.device_count(),
+        },
+    }
+    log_path.write_text(
+        json.dumps(run_log, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    print(f"[MiniMax-H3] Run log → {log_path.resolve()}")
     return out_path
 
 
@@ -639,6 +692,11 @@ def parse_args() -> Config:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--prompt", default=defaults.prompt, help="Text prompt")
+    parser.add_argument(
+        "--prompt-file", dest="prompt_file", default=None, metavar="PATH",
+        help="Read the prompt from a UTF-8 text file (overrides --prompt). Use "
+             "this for non-ASCII prompts to avoid shell/code-page corruption.",
+    )
     parser.add_argument("--image", default=defaults.image, help="First-frame image → FL2VA mode")
     parser.add_argument(
         "--reference-image", dest="reference_images", action="append", metavar="PATH",
@@ -665,8 +723,15 @@ def parse_args() -> Config:
 
     reference_images = args.reference_images or []
 
+    # A UTF-8 prompt file bypasses shell/code-page corruption of non-ASCII text
+    # (e.g. CJK) that can otherwise inflate the token count and blow up memory.
+    prompt = args.prompt
+    if args.prompt_file:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8").strip()
+
     return Config(
-        prompt=args.prompt,
+        prompt=prompt,
+        prompt_file=args.prompt_file,
         image=args.image,
         reference_images=reference_images,
         num_frames=args.frames,
@@ -719,6 +784,7 @@ def main() -> None:
     if config.reference_images:
         _ensure_reference_partition()
 
+    requested_num_frames = config.num_frames
     snapped = snap_num_frames(config.num_frames)
     if snapped != config.num_frames:
         print(
@@ -733,7 +799,7 @@ def main() -> None:
     pipe = build_pipeline(config)
 
     results, mode = run_generation(pipe, config)
-    save_output(results, config, mode)
+    save_output(results, config, mode, requested_num_frames)
     total_minutes = (time.perf_counter() - run_started) / 60
     print(f"[MiniMax-H3] Total generation time: {total_minutes:.2f} mins")
 
