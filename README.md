@@ -75,6 +75,32 @@ Example with two references:
 
 `--reference-image` and `--image` are different modes and cannot be combined. Reference-image generation is supported by `auto_offload`, `bf16_single`, `max_gpu`, and `context_parallel`; it is not supported by the experimental `multi_gpu` layout.
 
+### Reference image memory and `--reference-short-edge`
+
+Every reference image is resized so its **short edge is 2048 px** (the released model's own convention) before it is turned into Qwen3-VL vision tokens and VAE condition latents — independent of `--width`/`--height`. This resize is aspect-ratio driven with no maximum-pixels cap, so a wide or tall reference (e.g. the last frame of a previous clip, chained in for continuity) costs noticeably more than a near-square one: at a fixed 2048 px short edge, a 16:9 frame encodes to roughly 1.4x the tokens of a 3:4 portrait, and a 2.39:1 frame roughly 1.8x.
+
+This is a common cause of an out-of-memory error that happens early, during "Encoding prompt on each rank" (the Qwen3-VL conditioner), rather than during denoising — reducing `--width`/`--height` does not help that stage, because it runs before the generated canvas is touched, and under `context_parallel` the conditioner is not sharded across GPUs (only the denoise step is).
+
+Use `--reference-short-edge PX` to override the 2048 px default for all reference images in the request:
+|reference_image_short_edge	|Last frame encoded |Rel. reference cost|
+2048 (default)|	2048×3744|	1.0×  |
+1536          |	1536×2816|	~0.56×|
+1280	        | 1280×2336|	~0.39×|
+1024	        | 1024×1888|	~0.25×|
+
+```powershell
+& '.venv\Scripts\python.exe' LoMMH.py `
+  --strategy context_parallel `
+  --reference-image project_3\outputs\part1_last.jpg `
+  --reference-image project_3\female_role_s.jpg `
+  --prompt-file project_3\prompt_2.txt `
+  --frames 345 --width 704 --height 384 --steps 35 --seed 22 `
+  --reference-short-edge 1280 `
+  --output part2.mp4
+```
+
+Cost scales roughly with the square of the short edge, so `1280` costs about 0.39x of the 2048 default and `1024` about 0.25x. Lower it in steps (e.g. 1536 -> 1280 -> 1024) until the conditioner stage fits; this keeps the full, uncropped reference image (useful for last-frame continuity chaining) rather than cropping it, at some cost to reference fidelity. If lowering it is not enough, switch `--strategy` to `auto_offload`, which streams the conditioner's weights instead of holding them fully resident and tends to resolve conditioner-stage OOMs that `context_parallel` cannot, since `context_parallel` only shards the denoise step.
+
 ### Additional `ref2va` weights
 
 The base MiniMax-H3 snapshot does not include the separate `transformer_ref` partition required by `ref2va`. When reference images are requested, `LoMMH.py` checks for that partition before loading the pipeline. If it is missing or incomplete, it automatically launches the resumable downloader, temporarily enables Hub access, verifies the downloaded shards, and then resumes generation in offline mode.
