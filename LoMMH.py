@@ -12,6 +12,8 @@ Quick start
     python LoMMH.py                       # default T2VA clip
     python LoMMH.py --frames 345          # ~14.4 s (model max)
     python LoMMH.py --image first.jpg     # image-to-video (FL2VA)
+    python LoMMH.py --reference-image subject.png   # subject reference (REF2VA)
+    python LoMMH.py --reference-video motion.mp4     # motion/camera reference (REF2VA)
     python LoMMH.py --strategy auto_offload   # 24-32 GB VRAM
     python LoMMH.py --help                # all options
 
@@ -219,6 +221,7 @@ class Config:
     prompt_file: str | None = None
     image: str | None = None          # first-frame image → FL2VA (else T2VA)
     reference_images: list[str] = field(default_factory=list)  # subject refs → REF2VA
+    reference_videos: list[str] = field(default_factory=list)  # motion/camera refs → REF2VA
     reference_short_edge: int | None = None  # ref2va: override encode short edge (default 2048)
     num_frames: int = MAX_FRAMES      # 24 fps; snapped to 17*n+5 in [124, 345]
     height: int = 544                 # multiple of 32
@@ -237,6 +240,11 @@ class Config:
     @property
     def duration_s(self) -> float:
         return self.num_frames / FPS
+
+    @property
+    def has_references(self) -> bool:
+        """Whether any ref2va reference (image or video) was supplied."""
+        return bool(self.reference_images or self.reference_videos)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +448,31 @@ def _workflow_for(config: Config) -> str:
     ``transformer`` and also serves plain ``t2va`` (its keyframe blocks stay
     dormant without an ``image``).
     """
-    return "ref2va" if config.reference_images else "fl2va"
+    return "ref2va" if config.has_references else "fl2va"
+
+
+def _build_references(config: Config) -> list:
+    """Decode the ref2va references into their in-modality dataclasses, in order.
+
+    The reference list is ordered — the order labels each reference in the prompt
+    presentation and lays it out on the shared audio/video rotary clock, so a
+    different order is a different request. Image references (``<Picture i>``)
+    come first, then video references (``<Video k>``, conditioned on together
+    with their own soundtrack).
+    """
+    from diffusers.modular_pipelines.minimax_h3.references import (
+        MiniMaxH3ImageReference,
+        MiniMaxH3VideoReference,
+    )
+
+    references: list = [
+        MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
+    ]
+    references += [
+        MiniMaxH3VideoReference.from_file(path) for path in config.reference_videos
+    ]
+    return references
+
 
 
 def _build_max_gpu(config: Config):
@@ -453,7 +485,7 @@ def _build_max_gpu(config: Config):
     stages (pipeline state follows a single execution device).
     """
     _require_max_gpu_memory(config)
-    if config.reference_images:
+    if config.has_references:
         return _build_max_gpu_ref2va(config)
 
     print(f"[MiniMax-H3]   transformer  -> cuda:{config.transformer_gpu} (int8, whole)")
@@ -623,7 +655,7 @@ def _build_auto_offload(config: Config):
     """Single GPU: int8 weights + block-level CPU streaming (24-32 GB VRAM)."""
     from diffusers.hooks.group_offloading import apply_group_offloading
 
-    ref2va = bool(config.reference_images)
+    ref2va = config.has_references
     pipe = ModularPipeline.from_pretrained(MODEL_INDEX)
     if ref2va:
         _apply_reference_short_edge(pipe, config)
@@ -790,6 +822,10 @@ def _print_run_header(config: Config, mode: str) -> None:
         print(f"[MiniMax-H3] Refs:   {len(config.reference_images)} image(s)")
         for path in config.reference_images:
             print(f"[MiniMax-H3]          - {path}")
+    if config.reference_videos:
+        print(f"[MiniMax-H3] Refs:   {len(config.reference_videos)} video(s)")
+        for path in config.reference_videos:
+            print(f"[MiniMax-H3]          - {path}")
     print(
         f"[MiniMax-H3] Frames: {config.num_frames} (~{config.duration_s:.1f}s @ {FPS}fps)"
         f"  Size: {config.width}×{config.height}  Steps: {config.steps}  Seed: {config.seed}\n"
@@ -808,18 +844,14 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     outputs = ["videos", "audio", "sampling_rate"]
     device = plan.device
     generator = torch.Generator().manual_seed(config.seed)
-    ref2va = bool(config.reference_images)
+    ref2va = config.has_references
     mode = "ref2va" if ref2va else "t2va"
     workflow_name = "ref2va" if ref2va else "t2va"
     main_proc = _is_main_process()
 
     references = None
     if ref2va:
-        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
-
-        references = [
-            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
-        ]
+        references = _build_references(config)
 
     if main_proc:
         _print_run_header(config, mode)
@@ -934,11 +966,7 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
 
     # Multi-GPU ref2va split (max_gpu): five workflow blocks across three GPUs.
     if isinstance(pipe, _Ref2VASplit):
-        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
-
-        references = [
-            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
-        ]
+        references = _build_references(config)
         transformer_device = torch.device(f"cuda:{pipe.transformer_gpu}")
         decoder_device = torch.device(f"cuda:{pipe.decoder_gpu}")
 
@@ -994,11 +1022,8 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
 
     # Single-pipeline strategies (bf16_single / auto_offload).
     kwargs["prompt"] = config.prompt
-    if config.reference_images:
-        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
-        kwargs["references"] = [
-            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
-        ]
+    if config.has_references:
+        kwargs["references"] = _build_references(config)
         mode = "ref2va"
     elif config.image is not None:
         from diffusers.utils.loading_utils import load_image
@@ -1040,6 +1065,7 @@ def save_output(
             "prompt_file": config.prompt_file,
             "image": config.image,
             "reference_images": config.reference_images,
+            "reference_videos": config.reference_videos,
             "requested_frames": (
                 config.num_frames
                 if requested_num_frames is None
@@ -1098,6 +1124,12 @@ def parse_args() -> Config:
              "images. Not combined with --image.",
     )
     parser.add_argument(
+        "--reference-video", dest="reference_videos", action="append", metavar="PATH",
+        help="Motion/camera reference video (with its soundtrack) → REF2VA mode. "
+             "Repeat for up to 3 videos. Combine with --reference-image; not "
+             "combined with --image. Needs PyAV (pip install av).",
+    )
+    parser.add_argument(
         "--reference-short-edge", dest="reference_short_edge", type=int,
         default=defaults.reference_short_edge, metavar="PX",
         help="ref2va only: short edge (px) each reference image is encoded at "
@@ -1123,6 +1155,7 @@ def parse_args() -> Config:
     args = parser.parse_args()
 
     reference_images = args.reference_images or []
+    reference_videos = args.reference_videos or []
 
     # A UTF-8 prompt file bypasses shell/code-page corruption of non-ASCII text
     # (e.g. CJK) that can otherwise inflate the token count and blow up memory.
@@ -1135,6 +1168,7 @@ def parse_args() -> Config:
         prompt_file=args.prompt_file,
         image=args.image,
         reference_images=reference_images,
+        reference_videos=reference_videos,
         reference_short_edge=args.reference_short_edge,
         num_frames=args.frames,
         height=args.height,
@@ -1147,33 +1181,43 @@ def parse_args() -> Config:
     )
 
 
-# Reference images run on the single-pipeline strategies or the multi-GPU splits.
+# Reference media run on the single-pipeline strategies or the multi-GPU splits.
 _REF2VA_STRATEGIES = ("auto_offload", "bf16_single", "max_gpu", "context_parallel")
 _MAX_REFERENCE_IMAGES = 9
+_MAX_REFERENCE_VIDEOS = 3
 
 
 def _validate_config(config: Config) -> None:
     """Validate cross-field constraints, raising ``SystemExit`` on misuse."""
-    if not config.reference_images:
+    if not config.has_references:
         return
     if config.image is not None:
         raise SystemExit(
-            "[MiniMax-H3] --reference-image (ref2va) and --image (fl2va) are "
-            "different modes; pass only one."
+            "[MiniMax-H3] --reference-image/--reference-video (ref2va) and "
+            "--image (fl2va) are different modes; pass only one."
         )
     if len(config.reference_images) > _MAX_REFERENCE_IMAGES:
         raise SystemExit(
             f"[MiniMax-H3] At most {_MAX_REFERENCE_IMAGES} reference images are "
             f"supported; got {len(config.reference_images)}."
         )
-    missing = [p for p in config.reference_images if not Path(p).is_file()]
+    if len(config.reference_videos) > _MAX_REFERENCE_VIDEOS:
+        raise SystemExit(
+            f"[MiniMax-H3] At most {_MAX_REFERENCE_VIDEOS} reference videos are "
+            f"supported; got {len(config.reference_videos)}."
+        )
+    missing = [
+        p
+        for p in (*config.reference_images, *config.reference_videos)
+        if not Path(p).is_file()
+    ]
     if missing:
         raise SystemExit(
-            "[MiniMax-H3] Reference image(s) not found: " + ", ".join(missing)
+            "[MiniMax-H3] Reference media not found: " + ", ".join(missing)
         )
     if config.strategy not in _REF2VA_STRATEGIES:
         raise SystemExit(
-            f"[MiniMax-H3] Reference images need --strategy "
+            f"[MiniMax-H3] References need --strategy "
             f"{' or '.join(_REF2VA_STRATEGIES)} (got '{config.strategy}')."
         )
     if config.reference_short_edge is not None and config.reference_short_edge < 64:
@@ -1197,7 +1241,7 @@ def main() -> None:
         )
         config.num_frames = snapped
 
-    if config.reference_images:
+    if config.has_references:
         _ensure_reference_partition()
 
     # Context parallel runs one worker process per GPU; each worker owns the

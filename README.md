@@ -1,6 +1,6 @@
 # MiniMax-H3 Local Test Harness
 
-This project runs the MiniMax-H3 video-and-audio model from the local Hugging Face cache. It uses the Diffusers modular pipeline and supports text-to-video, first-frame image-to-video, and reference-image generation.
+This project runs the MiniMax-H3 video-and-audio model from the local Hugging Face cache. It uses the Diffusers modular pipeline and supports text-to-video, first-frame image-to-video, and reference-media generation from images or motion videos.
 
 Generation is offline after the required model files are present. The script rewrites the modular model index so components load from the cached snapshot instead of contacting the Hub.
 
@@ -9,6 +9,7 @@ Generation is offline after the required model files are present. The script rew
 - Text-to-video (`t2va`)
 - First-frame image-to-video (`fl2va`) with `--image`
 - Subject/style reference-image generation (`ref2va`) with one or more `--reference-image` arguments
+- Motion/camera reference-video generation (`ref2va`) with one or more `--reference-video` arguments
 - Int8 quantisation and CPU/group offloading for smaller GPUs
 - Explicit multi-GPU placement for the `max_gpu` strategy (needs ~64 GB/GPU; see note below)
 - Context-parallel single-clip acceleration across GPUs with the `context_parallel` strategy (requires WSL2 or Linux — needs NCCL, which the Windows PyTorch wheels don't include)
@@ -53,11 +54,27 @@ D:\hf_models\hub\models--MiniMaxAI--MiniMax-H3\snapshots\<revision>
 
 The base snapshot must contain `modular_model_index.json`, `transformer`, `text_encoder`, and the VAE components.
 
-## Reference images and `ref2va`
+## Reference media and `ref2va`
 
-Reference-image generation is selected by passing `--reference-image`. Up to 9 image references can be supplied, and the option can be repeated. The order of the images is preserved, so prompts should describe their roles as Picture 1, Picture 2, and so on.
+Reference-media generation is selected by passing `--reference-image` and/or `--reference-video`. Up to 9 image references and up to 3 video references can be supplied; the options can be repeated. The order is preserved, so prompts should describe their roles as Picture 1, Picture 2, Video 1, and so on.
 
-Example with two references:
+Example with a still subject reference and a motion reference video:
+
+```powershell
+& '.venv\Scripts\python.exe' LoMMH.py `
+  --strategy auto_offload `
+  --reference-image images\subject.jpg `
+  --reference-video videos\motion_reference.mp4 `
+  --prompt-file prompts\prompt2.txt `
+  --frames 345 `
+  --width 704 `
+  --height 384 `
+  --steps 35 `
+  --seed 52 `
+  --output hl_output_ref_video.mp4
+```
+
+Example with two image references:
 
 ```powershell
 & '.venv\Scripts\python.exe' LoMMH.py `
@@ -73,7 +90,7 @@ Example with two references:
   --output hl_output2.mp4
 ```
 
-`--reference-image` and `--image` are different modes and cannot be combined. Reference-image generation is supported by `auto_offload`, `bf16_single`, `max_gpu`, and `context_parallel`; it is not supported by the experimental `multi_gpu` layout.
+`--reference-image`, `--reference-video`, and `--image` are different modes and cannot be combined. Reference-media generation is supported by `auto_offload`, `bf16_single`, `max_gpu`, and `context_parallel`; it is not supported by the experimental `multi_gpu` layout.
 
 ### Reference image memory and `--reference-short-edge`
 
@@ -189,6 +206,7 @@ metadata, ensuring the saved last image is the final decodable frame.
 | `--prompt-file PATH` | Read a UTF-8 prompt file; overrides `--prompt`. |
 | `--image PATH` | First-frame image for `fl2va`. |
 | `--reference-image PATH` | Reference image for `ref2va`; repeat up to 9 times. |
+| `--reference-video PATH` | Motion/camera reference video for `ref2va`; repeat up to 3 times. The video's soundtrack is used as a reference audio track when present. |
 | `--frames N` | Requested frame count at 24 fps; automatically snapped to a valid value. |
 | `--height N` / `--width N` | Output dimensions; use multiples of 32. |
 | `--steps N` | Number of denoising steps. Lower values are faster but lower quality. |
