@@ -735,10 +735,6 @@ def _build_context_parallel(config: Config) -> "_ContextParallelPlan":
             "[MiniMax-H3] context_parallel must be launched via _cp_spawn; run it "
             "with `python LoMMH.py --strategy context_parallel …` or run_local_cp.ps1."
         )
-    if config.image is not None:
-        raise ValueError(
-            "[MiniMax-H3] context_parallel supports t2va and ref2va only; omit --image."
-        )
     rank, world_size, local_rank = _dist_setup()
     device = torch.device(f"cuda:{local_rank}")
     return _ContextParallelPlan(rank, world_size, local_rank, device)
@@ -793,10 +789,6 @@ def _cp_spawn(config: Config, requested_num_frames: int, run_started: float) -> 
     """
     import torch.multiprocessing as mp
 
-    if config.image is not None:
-        raise ValueError(
-            "[MiniMax-H3] context_parallel supports t2va and ref2va only; omit --image."
-        )
     world_size = int(os.environ.get("CP_WORLD_SIZE", "0")) or torch.cuda.device_count()
     if world_size < 2:
         raise SystemExit(
@@ -818,6 +810,8 @@ def _cp_spawn(config: Config, requested_num_frames: int, run_started: float) -> 
 def _print_run_header(config: Config, mode: str) -> None:
     print(f"\n[MiniMax-H3] Mode:   {mode}")
     print(f"[MiniMax-H3] Prompt: {config.prompt}")
+    if config.image:
+        print(f"[MiniMax-H3] Image:  {config.image}")
     if config.reference_images:
         print(f"[MiniMax-H3] Refs:   {len(config.reference_images)} image(s)")
         for path in config.reference_images:
@@ -845,23 +839,28 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     device = plan.device
     generator = torch.Generator().manual_seed(config.seed)
     ref2va = config.has_references
-    mode = "ref2va" if ref2va else "t2va"
-    workflow_name = "ref2va" if ref2va else "t2va"
+    fl2va = config.image is not None and not ref2va
+    conditioned = ref2va or fl2va  # both run before_encode + vae_encoder stages
+    mode = "ref2va" if ref2va else "fl2va" if fl2va else "t2va"
+    workflow_name = mode
     main_proc = _is_main_process()
 
-    references = None
-    if ref2va:
-        references = _build_references(config)
+    references = _build_references(config) if ref2va else None
+    keyframe = None
+    if fl2va and config.image is not None:
+        from diffusers.utils.loading_utils import load_image
+
+        keyframe = load_image(config.image)
 
     if main_proc:
         _print_run_header(config, mode)
 
-    # Stage 1: prompt (+ references) -> prompt embeddings. Run on every rank so
-    # the denoise inputs are identical; only the transformer is collective.
+    # Stage 1: prompt (+ keyframe/references) -> prompt embeddings. Run on every
+    # rank so the denoise inputs are identical; only the transformer is collective.
     if main_proc:
         print("[MiniMax-H3] Encoding prompt on each rank …")
     text_encoder = _load_int8_text_encoder(device_map={"": str(device)})
-    if ref2va:
+    if conditioned:
         conditioner = _cp_workflow_stage(
             workflow_name, lambda name: name in ("before_encode", "text_encoder")
         )
@@ -879,17 +878,27 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
             height=config.height,
             width=config.width,
         )
+    elif fl2va:
+        state = conditioner(
+            prompt=config.prompt,
+            image=keyframe,
+            height=config.height,
+            width=config.width,
+        )
     else:
         state = conditioner(prompt=config.prompt)
     del conditioner, text_encoder
     _free_cuda()
 
-    # Stage 1b (ref2va only): references -> condition latents.
-    if ref2va:
+    # Stage 1b (fl2va/ref2va): keyframe or references -> condition latents.
+    if conditioned:
         reference_encoder = _cp_workflow_stage(workflow_name, lambda name: name == "vae_encoder")
         reference_encoder.load_components(dtype=torch.bfloat16)
         reference_encoder.vae.to(device)
-        reference_encoder.audio_vae.to(device)
+        if hasattr(reference_encoder, "audio_vae"):
+            # fl2va's keyframe is video-only; only ref2va (its video references
+            # can carry audio) registers an audio_vae on this stage.
+            reference_encoder.audio_vae.to(device)
         state = reference_encoder(state=state)
         del reference_encoder
         _free_cuda()
@@ -899,22 +908,22 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
         print("[MiniMax-H3] Denoising (context-parallel) …")
     if ref2va:
         transformer = _load_int8_transformer_ref(device_map={"": str(device)})
-        denoiser = _cp_workflow_stage(workflow_name, lambda name: name.startswith("denoise"))
-        denoiser.update_components(transformer_ref=transformer)
     else:
         transformer = _load_int8_transformer(device_map={"": str(device)})
-        denoiser = _cp_workflow_stage(
-            workflow_name,
-            lambda name: name not in ("text_encoder", "decode.video", "decode.audio"),
-        )
+    denoiser = _cp_workflow_stage(workflow_name, lambda name: name.startswith("denoise"))
+    if ref2va:
+        denoiser.update_components(transformer_ref=transformer)
+    else:
         denoiser.update_components(transformer=transformer)
     denoiser.load_components(dtype=torch.bfloat16)
     _enable_context_parallel(transformer, plan.world_size)
 
     state = move_conditioning_state(state, device)
     if ref2va:
+        # before_encode already resolved num_frames/height/width into the state.
         state = denoiser(state=state, num_inference_steps=config.steps, generator=generator)
     else:
+        # fl2va/t2va resolve the video layout at denoise time.
         state = denoiser(
             state=state,
             num_frames=config.num_frames,
@@ -927,12 +936,7 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     _free_cuda()
 
     # Stage 3: decode video + audio on the same card.
-    if ref2va:
-        decoder = _cp_workflow_stage(workflow_name, lambda name: name.startswith("decode"))
-    else:
-        decoder = _cp_workflow_stage(
-            workflow_name, lambda name: name in ("decode.video", "decode.audio")
-        )
+    decoder = _cp_workflow_stage(workflow_name, lambda name: name.startswith("decode"))
     decoder.load_components(dtype=torch.bfloat16)
     decoder.vae.to(device)
     decoder.audio_vae.to(device)
