@@ -24,12 +24,13 @@ if (-not (Test-Path $script)) {
 # inherits a different PYTORCH_CUDA_ALLOC_CONF value.
 $env:PYTORCH_CUDA_ALLOC_CONF = 'expandable_segments:True'
 
-$first_image = Join-Path $root 'images\first_flame.jpg'
+$first_image = Join-Path $root 'images\paradise.jpg'
 if (-not (Test-Path $first_image)) {
     throw "Input image not found at: $first_image"
 }
 
-$PROMPTFILE = Join-Path $root 'prompt.txt'
+#$PROMPTFILE = Join-Path $root 'prompt.txt'
+$PROMPTFILE = Join-Path $root 'prompts\paradise.txt'
 
 # Run the generation script with specified parameters. You can modify the prompt, number of frames, and output filename as needed.
 & $python $script `
@@ -37,12 +38,12 @@ $PROMPTFILE = Join-Path $root 'prompt.txt'
     --prompt-file $PROMPTFILE `
     --image $first_image `
     --frames 345 `
-    --width 704 `
-    --height 384 `
+    --width 1024 `
+    --height 1024 `
     --steps 35 `
     --seed 22 `
     --output-dir .\outputs `
-    --output "output.mp4" `
+    --output "paradise.mp4" `
     @args
 
 exit $LASTEXITCODE

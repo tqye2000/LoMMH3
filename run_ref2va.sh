@@ -8,9 +8,9 @@
 # invocation, not torchrun.
 #
 # Usage (from Windows PowerShell):
-#   wsl -d Ubuntu -- bash /mnt/.../run_local_cp.sh
+#   wsl -d Ubuntu -- bash /mnt/.../run_ref2va.sh
 # Extra flags are forwarded to LoMMH.py, e.g.:
-#   wsl -d Ubuntu -- bash /mnt/.../run_local_cp.sh --steps 40
+#   wsl -d Ubuntu -- bash /mnt/.../run_ref2va.sh --steps 40
 # ---------------------------------------------------------------------------
 set -euo pipefail
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
@@ -29,12 +29,12 @@ SCRIPT="$ROOT/LoMMH.py"
 _STAGED="$HOME/hf_models/hub/models--MiniMaxAI--MiniMax-H3"
 if [[ -z "${HF_HOME:-}" ]]; then
     if [[ -d "$_STAGED" ]]; then
-        export HF_HOME="$HOME/models"
+        export HF_HOME="$HOME/hf_models"
     else
-        export HF_HOME="/mnt/d/models"
+        export HF_HOME="/mnt/d/hf_models"
     fi
 fi
-echo "[run_local_cp] HF_HOME=$HF_HOME"
+echo "[run_ref2va] HF_HOME=$HF_HOME"
 
 # Number of GPUs to split one clip across. LoMMH.py spawns one worker per GPU.
 export CP_WORLD_SIZE="${CP_WORLD_SIZE:-4}"
@@ -44,24 +44,28 @@ export CP_WORLD_SIZE="${CP_WORLD_SIZE:-4}"
 # with spurious OOM. LoMMH.py auto-selects a WSL-safe allocator config.
 
 # Reference images for image-to-video generation (Ref2VA).
-IMAGE1="$ROOT/project/ref1.jpg"
-IMAGE2="$ROOT/project/ref2.jpg"
+IMAGE1="$ROOT/project/outputs/part1_last.jpg"
+IMAGE2="$ROOT/project/female_role.jpg"
+IMAGE3="$ROOT/project/male_role.jpg"
 PROMPTFILE="$ROOT/project/prompt.txt"
 
 [[ -f "$IMAGE1" ]] || { echo "Input image not found: $IMAGE1" >&2; exit 1; }
 [[ -f "$IMAGE2" ]] || { echo "Input image not found: $IMAGE2" >&2; exit 1; }
+[[ -f "$IMAGE3" ]] || { echo "Input image not found: $IMAGE3" >&2; exit 1; }
 [[ -f "$PROMPTFILE" ]] || { echo "Prompt file not found: $PROMPTFILE" >&2; exit 1; }
 
 exec "$PYTHON" "$SCRIPT" \
     --strategy context_parallel \
     --reference-image "$IMAGE1" \
     --reference-image "$IMAGE2" \
+    --reference-image "$IMAGE3" \
     --prompt-file "$PROMPTFILE" \
     --frames 345 \
     --width 704 \
     --height 384 \
     --steps 35 \
-    --seed 42 \
+    --seed 22 \
+    --reference-short-edge 1536 \
     --output-dir "$ROOT/project/outputs" \
-    --output "output.mp4" \
+    --output "part2.mp4" \
     "$@"

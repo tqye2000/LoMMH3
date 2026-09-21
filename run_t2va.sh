@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# WSL2 / Linux launcher for MiniMax-H3 single-clip context parallelism.
+# WSL2 / Linux launcher for MiniMax-H3 t2va with GPU context parallel (CP).
 #
-# Mirrors run_local_cp.ps1 but runs under Linux, where the PyPI torch wheel has
-# NCCL, so Ulysses context parallelism actually works. LoMMH.py spawns one
-# worker per GPU itself (torch.multiprocessing.spawn), so this is a plain python
-# invocation, not torchrun.
+# Use this when a single clip conditions on reference images AND a long prompt,
+# which OOMs the Qwen3-VL conditioner under context_parallel (CP replicates the
+# ~31 GB int8 conditioner on every rank and only shards the *denoise*, so it
+# gives no relief to the prompt/reference-encode stage). auto_offload streams
+# the big weight stacks layer-by-layer instead of holding them resident, which
+# frees the headroom the conditioner activation needs. Slower than CP, but it
+# keeps the full workflow: both references, the uncropped last frame, all frames.
+#
+# Runs on MULTIPLE GPUs with context parallel (CP), so set CP_WORLD_SIZE accordingly.
 #
 # Usage (from Windows PowerShell):
-#   wsl -d Ubuntu -- bash /mnt/.../run_local_cp.sh
+#   wsl -d Ubuntu -- bash /mnt/.../run_t2va_cp.sh
 # Extra flags are forwarded to LoMMH.py, e.g.:
-#   wsl -d Ubuntu -- bash /mnt/.../run_local_cp.sh --steps 40
+#   wsl -d Ubuntu -- bash /mnt/.../run_t2va_cp.sh --steps 40
 # ---------------------------------------------------------------------------
 set -euo pipefail
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
@@ -29,39 +34,28 @@ SCRIPT="$ROOT/LoMMH.py"
 _STAGED="$HOME/hf_models/hub/models--MiniMaxAI--MiniMax-H3"
 if [[ -z "${HF_HOME:-}" ]]; then
     if [[ -d "$_STAGED" ]]; then
-        export HF_HOME="$HOME/models"
+        export HF_HOME="$HOME/hf_models"
     else
-        export HF_HOME="/mnt/d/models"
+        export HF_HOME="/mnt/d/hf_models"
     fi
 fi
-echo "[run_local_cp] HF_HOME=$HF_HOME"
-
-# Number of GPUs to split one clip across. LoMMH.py spawns one worker per GPU.
-export CP_WORLD_SIZE="${CP_WORLD_SIZE:-4}"
+echo "[run_t2va_cp] HF_HOME=$HF_HOME"
 
 # NOTE: do NOT set PYTORCH_CUDA_ALLOC_CONF=expandable_segments here. WSL2's
 # paravirtualized GPU lacks the CUDA VMM APIs that feature needs, so it fails
 # with spurious OOM. LoMMH.py auto-selects a WSL-safe allocator config.
 
-# Reference images for image-to-video generation (Ref2VA).
-IMAGE1="$ROOT/project/ref1.jpg"
-IMAGE2="$ROOT/project/ref2.jpg"
-PROMPTFILE="$ROOT/project/prompt.txt"
-
-[[ -f "$IMAGE1" ]] || { echo "Input image not found: $IMAGE1" >&2; exit 1; }
-[[ -f "$IMAGE2" ]] || { echo "Input image not found: $IMAGE2" >&2; exit 1; }
+PROMPTFILE="$ROOT/prompts/prompt_3.txt"
 [[ -f "$PROMPTFILE" ]] || { echo "Prompt file not found: $PROMPTFILE" >&2; exit 1; }
 
 exec "$PYTHON" "$SCRIPT" \
     --strategy context_parallel \
-    --reference-image "$IMAGE1" \
-    --reference-image "$IMAGE2" \
     --prompt-file "$PROMPTFILE" \
-    --frames 345 \
-    --width 704 \
-    --height 384 \
-    --steps 35 \
-    --seed 42 \
-    --output-dir "$ROOT/project/outputs" \
-    --output "output.mp4" \
+    --frames 346 \
+    --width 1024 \
+    --height 1024 \
+    --steps 45 \
+    --seed 32 \
+    --output-dir "$ROOT/outputs" \
+    --output "重返旧地.mp4" \
     "$@"
