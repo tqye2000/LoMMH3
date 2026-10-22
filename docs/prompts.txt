@@ -1,0 +1,95 @@
+Use these as drop-in prompt texts. Keep your reference-image order consistent with the role map shown before each prompt.
+
+2 reference images
+
+1. Role map:
+Picture 1 = face and identity
+Picture 2 = outfit and style
+
+Prompt:
+A candid street portrait video of the same person as Picture 1, preserving facial identity and hair details, wearing the outfit and styling cues from Picture 2. The subject turns toward camera, smiles, then laughs naturally while taking two small steps forward. Golden-hour light, shallow depth of field, gentle handheld motion, realistic skin texture, lively but elegant atmosphere.
+
+2. Role map:
+Picture 1 = subject identity
+Picture 2 = background mood and color palette
+
+Prompt:
+Create a short cinematic shot featuring the person from Picture 1 in the visual mood of Picture 2. Keep identity fidelity high, including face proportions and hairstyle. The subject stands still at first, then gives a relaxed wave and laughs softly. Match Picture 2 for lighting temperature, color grading, and ambience, with subtle camera push-in and natural motion blur.
+
+3 reference images
+
+3. Role map:
+Picture 1 = identity
+Picture 2 = outfit/accessories
+Picture 3 = composition and location vibe
+
+Prompt:
+Generate a dynamic lifestyle clip with the same person as Picture 1, wearing the clothing and accessories from Picture 2, framed with the composition and environmental vibe of Picture 3. The subject starts in a medium shot, glances off-camera, then turns back and laughs with visible energy. Keep realistic body motion, soft wind interaction, and coherent shadows across the scene.
+
+4. Role map:
+Picture 1 = identity
+Picture 2 = makeup and styling
+Picture 3 = scene design
+Picture 4 = camera language and tone
+
+Prompt:
+Produce a polished editorial-style video: preserve the face and core identity from Picture 1, apply styling details from Picture 2, place the subject in a scene inspired by Picture 3, and follow the cinematic tone of Picture 4. Sequence: neutral pose, eye contact, smile break, then a brief laugh and head tilt. Keep temporal consistency, stable facial likeness, and high realism in skin, fabric, and lighting transitions.
+
+4 reference images
+
+5. Role map:
+Picture 1 = main subject identity
+Picture 2 = secondary subject identity
+Picture 3 = shared wardrobe palette
+Picture 4 = scene and mood
+
+Prompt:
+Create a two-person social moment video. Preserve the first person’s identity from Picture 1 and the second person’s identity from Picture 2. Use wardrobe palette and material feel from Picture 3, and stage the action in the mood and environment of Picture 4. They exchange a quick glance, react to a joke, and laugh together. Keep both faces temporally stable and expressions natural.
+
+6. Role map:
+Picture 1 = subject identity
+Picture 2 = hairstyle and accessories
+Picture 3 = indoor set design
+Picture 4 = cinematic color and lighting style
+
+Prompt:
+A short high-end commercial-style clip with the same person as Picture 1, adopting hairstyle and accessory cues from Picture 2, inside a set inspired by Picture 3, with the color science and lighting character of Picture 4. Action: subject enters frame, pauses for camera, then gives a bright laugh and subtle shoulder movement. Prioritize identity consistency, clean motion, and filmic texture.
+
+Practical prompt pattern you can reuse:
+Preserve identity from Picture 1, borrow styling from Picture 2, environment from Picture 3, and camera mood from Picture 4. Then describe a simple 2-4 beat action sequence and finish with quality constraints like temporal consistency, realistic motion, and natural expressions.
+
+======================================
+Prompt:
+Create a cinematic 15-second video using Picture 1 as the character reference and Picture 2 as the building/location reference.
+
+Preserve the woman’s recognizable facial identity, facial proportions, expression, and long hairstyle from Picture 1. She is dressed in an elegant professional office outfit with stylish high-heeled shoes.
+
+Scene progression:
+
+0–4 sec: The woman confidently walks out of the building shown in Picture 2. Show a graceful full-body walking shot, with natural body movement, realistic hair motion, and subtle movement of her clothing.
+
+4–7 sec: She stops outside the entrance and waits calmly, looking slightly toward the street. The camera gently moves around her in a cinematic medium shot.
+
+7–10 sec: A sleek, polished luxury car approaches smoothly and stops beside her.
+
+10–13 sec: She walks toward the car, opens the door naturally, and gets into the vehicle with elegant, realistic movement.
+
+13–15 sec: The car smoothly pulls away from the building and drives down the street. End with a cinematic wide shot as the vehicle moves into the golden-hour light.
+
+Visual style: warm golden-hour sunlight, soft highlights and natural shadows, cinematic depth of field, subtle handheld camera movement, realistic human motion, elegant urban atmosphere, sophisticated and lively but not rushed. Maintain consistent character identity, hairstyle, clothing, building architecture, and lighting throughout the entire sequence.
+
+Photorealistic, cinematic commercial-film quality, realistic physics, natural walking animation, smooth transitions, no facial distortion, no identity drift, no sudden costume changes, no extra limbs or unnatural hand movements.
+
+使用图片1作为人物参考，创作一段具有电影质感的15秒短视频。保留图片1中女士清晰可辨的面部身份特征、面部比例、表情以及长发造型。她身穿优雅、专业的办公室职业装，手拎一小包，并搭配时尚高跟鞋。
+
+**场景进程：**
+0–4秒：女士自信地从一栋办公楼内走出。以优雅的全身步行镜头呈现她的动作，身体运动自然流畅，长发随步伐真实摆动，服装也有细腻、自然的动态变化。
+4–7秒：她在办公楼入口外停下，平静地等待，并微微转头望向街道方向。镜头以电影感中景轻柔地环绕或移动拍摄她。
+7–10秒：从她注视的方向，一辆线条流畅、光洁精致的豪华轿车缓缓驶来，并平稳地停在她身旁。
+10–13秒：她优雅地走向汽车，自然地打开车门，然后以流畅、真实且优雅的动作坐进车内并关门。然后说到：请走吧！
+13–15秒：汽车平稳地顺着前行的方向驶离办公楼，沿街道向前驶去。最后以电影感广角镜头收尾，车辆朝着金色夕阳的方向驶入温暖的黄金时刻光线中。
+
+**视觉风格：**
+温暖的黄金时刻阳光，柔和高光与自然阴影，电影级景深，轻微且自然的手持摄影运动，真实的人体动作，优雅的都市氛围。整体气质精致、有活力，但节奏不过于仓促。整个视频过程中必须保持人物身份、发型、服装、建筑结构以及光线的一致性。
+
+照片级写实，电影广告片质感，真实物理效果，自然流畅的行走动画，镜头与场景之间过渡平滑。确保汽车前后运动方向保持一致。避免面部变形、人物身份漂移、服装突然变化、多余肢体、不自然的手部动作，以及任何不符合真实人体结构或物理规律的运动。

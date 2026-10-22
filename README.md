@@ -19,6 +19,7 @@ Generation is offline after the required model files are present. The script rew
 ## Files
 
 - `LoMMH.py` — main command-line generation script
+- `ui/` — MiniMax Studio, a local web app for projects, prompts, reference images, and queued generations (see below)
 - `download_transformer_ref.py` — resumable downloader for the `ref2va` transformer partition
 - `save_video_frames.py` — saves the first and last frames of a video as PNG images
 - `run_local.ps1` — local PowerShell example using the reference-image workflow
@@ -178,6 +179,40 @@ The included local example can also be run with:
 
 Extra arguments are forwarded by `run_local.ps1` to `LoMMH.py`.
 
+## MiniMax Studio (web UI)
+
+A local NiceGUI app for creating projects, editing prompts, managing a pool of
+reference images, choosing up to two images per generation, and queueing
+generations. It runs inside WSL2, launches `LoMMH.py` with the GPU venv, and is
+opened from a Windows browser. Design and roadmap: [docs/video-project-ui-implementation-plan.md](docs/video-project-ui-implementation-plan.md).
+
+One-time setup (creates `~/minimax-ui-venv`, separate from the GPU venv):
+
+```powershell
+wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/ui/setup_ui.sh
+```
+
+Start the app, then open the printed `http://localhost:8080/login?token=...` link:
+
+```powershell
+wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/ui/run_ui.sh
+```
+
+- Projects are stored under `~/minimax-ui-data` (override with `MINIMAX_UI_DATA`);
+  each project keeps a `project.log.jsonl` activity log.
+- Generations run one at a time. Closing the browser does not stop them, and a
+  restarted app reattaches to a generation that is still running.
+- **Stop after current** pauses the queue; the stop button on a job cancels it,
+  including all context-parallel GPU workers.
+- The login link changes on every start; only this machine can reach the app.
+
+Run the tests (no GPU needed; a fake generator stands in for `LoMMH.py`):
+
+```powershell
+wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/ui/setup_ui.sh --dev
+wsl -d Ubuntu -- bash -lc 'cd /mnt/d/TQYE/Experiments/MiniMax/ui && ~/minimax-ui-venv/bin/python -m pytest -q'
+```
+
 ## Saving the first and last video frames
 
 Use `save_video_frames.py` with any video format supported by PyAV/FFmpeg:
@@ -214,6 +249,9 @@ metadata, ensuring the saved last image is the final decodable frame.
 | `--strategy NAME` | `max_gpu`, `context_parallel`, `auto_offload`, `bf16_single`, or `multi_gpu`. |
 | `--output-dir PATH` | Destination directory; defaults to `outputs`. |
 | `--output NAME` | MP4 filename inside `--output-dir`. `.mp4` is added if omitted. |
+| `--no-auto-download` | Fail instead of downloading a missing `transformer_ref` partition. |
+| `--run-id ID` | Identifier recorded in the JSON run log. |
+| `--progress-jsonl PATH` | Append machine-readable progress events (stages, denoise steps, completion) to `PATH`. |
 
 Run `--help` for the full argument descriptions and defaults:
 

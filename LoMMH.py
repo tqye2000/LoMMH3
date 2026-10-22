@@ -232,6 +232,9 @@ class Config:
     device: str = "cuda"              # "mps" for Apple Silicon
     output_dir: Path = Path("outputs")
     output_filename: str | None = None  # custom MP4 filename; defaults by mode
+    no_auto_download: bool = False    # fail instead of downloading transformer_ref
+    run_id: str | None = None         # caller-supplied ID recorded in the run log
+    progress_jsonl: str | None = None  # append machine-readable progress events here
     # "max_gpu" only: each big model lives whole on its own GPU.
     transformer_gpu: int = 0
     conditioner_gpu: int = 1
@@ -245,6 +248,44 @@ class Config:
     def has_references(self) -> bool:
         """Whether any ref2va reference (image or video) was supplied."""
         return bool(self.reference_images or self.reference_videos)
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable progress (--progress-jsonl)
+# ---------------------------------------------------------------------------
+_PROGRESS_PATH: str | None = None
+
+
+def _progress(event: str, **fields: Any) -> None:
+    """Append one JSON progress event (rank 0 only); no-op without --progress-jsonl."""
+    if _PROGRESS_PATH is None or int(os.environ.get("RANK", "0")) != 0:
+        return
+    record = {"ts": time.time(), "event": event, **fields}
+    with open(_PROGRESS_PATH, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _enable_progress(path: str | None) -> None:
+    """Route progress events to ``path`` and report denoise steps from Diffusers."""
+    global _PROGRESS_PATH
+    if path is None or _PROGRESS_PATH is not None:
+        return
+    _PROGRESS_PATH = path
+
+    import diffusers.modular_pipelines.modular_pipeline as modular_module
+
+    base_tqdm = getattr(modular_module, "tqdm")
+
+    class _ReportingTqdm(base_tqdm):  # type: ignore[misc, valid-type]
+        def update(self, n: float | None = 1) -> bool | None:
+            result = super().update(n)
+            # Own counter: a disabled bar never advances ``self.n``.
+            self._mm_steps = getattr(self, "_mm_steps", 0) + int(n or 0)
+            _progress("step", i=self._mm_steps, n=int(self.total or 0))
+            return result
+
+    # The modular denoise loop builds its bar via this module-level name.
+    setattr(modular_module, "tqdm", _ReportingTqdm)
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +804,7 @@ def _cp_worker(
 
     _dist_setup()
     main_proc = _is_main_process()
+    _enable_progress(config.progress_jsonl)
 
     if main_proc:
         config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -775,6 +817,7 @@ def _cp_worker(
         save_output(results, config, mode, requested_num_frames)
         total_minutes = (time.perf_counter() - run_started) / 60
         print(f"[MiniMax-H3] Total generation time: {total_minutes:.2f} mins")
+        _progress("done", minutes=round(total_minutes, 2))
 
     _dist_cleanup()
 
@@ -859,6 +902,7 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     # rank so the denoise inputs are identical; only the transformer is collective.
     if main_proc:
         print("[MiniMax-H3] Encoding prompt on each rank …")
+    _progress("stage", name="encoding")
     text_encoder = _load_int8_text_encoder(device_map={"": str(device)})
     if conditioned:
         conditioner = _cp_workflow_stage(
@@ -892,6 +936,7 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
 
     # Stage 1b (fl2va/ref2va): keyframe or references -> condition latents.
     if conditioned:
+        _progress("stage", name="reference_encoding")
         reference_encoder = _cp_workflow_stage(workflow_name, lambda name: name == "vae_encoder")
         reference_encoder.load_components(dtype=torch.bfloat16)
         reference_encoder.vae.to(device)
@@ -906,6 +951,7 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     # Stage 2: context-parallel denoise on the per-rank transformer.
     if main_proc:
         print("[MiniMax-H3] Denoising (context-parallel) …")
+    _progress("stage", name="denoising", steps=config.steps)
     if ref2va:
         transformer = _load_int8_transformer_ref(device_map={"": str(device)})
     else:
@@ -936,6 +982,7 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     _free_cuda()
 
     # Stage 3: decode video + audio on the same card.
+    _progress("stage", name="decoding")
     decoder = _cp_workflow_stage(workflow_name, lambda name: name.startswith("decode"))
     decoder.load_components(dtype=torch.bfloat16)
     decoder.vae.to(device)
@@ -1051,6 +1098,7 @@ def save_output(
     if not filename.lower().endswith(".mp4"):
         filename += ".mp4"
     out_path = config.output_dir / filename
+    _progress("stage", name="saving")
     encode_video(
         results["videos"][0],
         fps=FPS,
@@ -1064,6 +1112,7 @@ def save_output(
     run_log = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "run_id": config.run_id,
         "parameters": {
             "prompt": config.prompt,
             "prompt_file": config.prompt_file,
@@ -1083,6 +1132,12 @@ def save_output(
             "steps": config.steps,
             "seed": config.seed,
             "strategy": config.strategy,
+            "reference_short_edge": config.reference_short_edge,
+            "cp_world_size": (
+                int(os.environ.get("WORLD_SIZE", "1"))
+                if config.strategy == "context_parallel"
+                else None
+            ),
             "device": config.device,
             "transformer_gpu": config.transformer_gpu,
             "conditioner_gpu": config.conditioner_gpu,
@@ -1104,6 +1159,7 @@ def save_output(
         encoding="utf-8",
     )
     print(f"[MiniMax-H3] Run log → {log_path.resolve()}")
+    _progress("saved", path=str(out_path.resolve()), log=str(log_path.resolve()))
     return out_path
 
 
@@ -1156,6 +1212,18 @@ def parse_args() -> Config:
         "--output", dest="output_filename", default=defaults.output_filename,
         help="Output MP4 filename inside the output folder",
     )
+    parser.add_argument(
+        "--no-auto-download", dest="no_auto_download", action="store_true",
+        help="Fail instead of downloading a missing transformer_ref partition.",
+    )
+    parser.add_argument(
+        "--run-id", dest="run_id", default=None,
+        help="Caller-supplied identifier recorded in the JSON run log.",
+    )
+    parser.add_argument(
+        "--progress-jsonl", dest="progress_jsonl", default=None, metavar="PATH",
+        help="Append machine-readable progress events (JSON Lines) to PATH.",
+    )
     args = parser.parse_args()
 
     reference_images = args.reference_images or []
@@ -1182,6 +1250,9 @@ def parse_args() -> Config:
         strategy=args.strategy,
         output_dir=Path(args.output_dir),
         output_filename=args.output_filename,
+        no_auto_download=args.no_auto_download,
+        run_id=args.run_id,
+        progress_jsonl=args.progress_jsonl,
     )
 
 
@@ -1235,6 +1306,7 @@ def main() -> None:
     run_started = time.perf_counter()
     config = parse_args()
     _validate_config(config)
+    _enable_progress(config.progress_jsonl)
 
     requested_num_frames = config.num_frames
     snapped = snap_num_frames(config.num_frames)
@@ -1246,6 +1318,11 @@ def main() -> None:
         config.num_frames = snapped
 
     if config.has_references:
+        if config.no_auto_download and not _reference_partition_complete():
+            raise SystemExit(
+                "[MiniMax-H3] transformer_ref partition is missing or incomplete and "
+                "--no-auto-download was given; run download_transformer_ref.py first."
+            )
         _ensure_reference_partition()
 
     # Context parallel runs one worker process per GPU; each worker owns the
@@ -1257,12 +1334,15 @@ def main() -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[MiniMax-H3] Loading model with strategy='{config.strategy}' …")
+    _progress("stage", name="loading")
     pipe = build_pipeline(config)
 
+    _progress("stage", name="generating", steps=config.steps)
     results, mode = run_generation(pipe, config)
     save_output(results, config, mode, requested_num_frames)
     total_minutes = (time.perf_counter() - run_started) / 60
     print(f"[MiniMax-H3] Total generation time: {total_minutes:.2f} mins")
+    _progress("done", minutes=round(total_minutes, 2))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# WSL2 / Linux launcher for MiniMax-H3 single-clip context parallelism.
+#
+# Mirrors run_local_cp.ps1 but runs under Linux, where the PyPI torch wheel has
+# NCCL, so Ulysses context parallelism actually works. LoMMH.py spawns one
+# worker per GPU itself (torch.multiprocessing.spawn), so this is a plain python
+# invocation, not torchrun.
+#
+# Usage (from Windows PowerShell):
+#   wsl -d Ubuntu -- bash /mnt/.../run_ref2va_cp.sh
+# Extra flags are forwarded to LoMMH.py, e.g.:
+#   wsl -d Ubuntu -- bash /mnt/.../run_ref2va_cp.sh --steps 40
+# ---------------------------------------------------------------------------
+set -euo pipefail
+export LC_ALL=C.UTF-8 LANG=C.UTF-8
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="${MINIMAX_VENV:-$HOME/minimax-venv}"
+PYTHON="$VENV/bin/python"
+SCRIPT="$ROOT/LoMMH.py"
+
+[[ -x "$PYTHON" ]] || { echo "Python venv not found at: $PYTHON  (run wsl_setup.sh first)" >&2; exit 1; }
+[[ -f "$SCRIPT" ]] || { echo "Generation script not found at: $SCRIPT" >&2; exit 1; }
+
+# Point HuggingFace at the model store. Prefer the ext4-staged copy (fast local
+# disk) when present, else fall back to the Windows store over drvfs (slow).
+# LoMMH.py reads HF_HOME and derives the MiniMax-H3 cache path from it.
+_STAGED="$HOME/hf_models/hub/models--MiniMaxAI--MiniMax-H3"
+if [[ -z "${HF_HOME:-}" ]]; then
+    if [[ -d "$_STAGED" ]]; then
+        export HF_HOME="$HOME/hf_models"
+    else
+        export HF_HOME="/mnt/d/hf_models"
+    fi
+fi
+echo "[run_ref2va_cp] HF_HOME=$HF_HOME"
+
+# Number of GPUs to split one clip across. LoMMH.py spawns one worker per GPU.
+export CP_WORLD_SIZE="${CP_WORLD_SIZE:-4}"
+
+# NOTE: do NOT set PYTORCH_CUDA_ALLOC_CONF=expandable_segments here. WSL2's
+# paravirtualized GPU lacks the CUDA VMM APIs that feature needs, so it fails
+# with spurious OOM. LoMMH.py auto-selects a WSL-safe allocator config.
+
+# Reference images for image-to-video generation (Ref2VA).
+IMAGE1="$ROOT/project_4/outputs/part2c_n_last.jpg"
+IMAGE2="$ROOT/project_4/male_3.jpg"
+#IMAGE3="$ROOT/project_4/female.jpg"
+PROMPTFILE="$ROOT/project_4/prompt2d.txt"
+
+[[ -f "$IMAGE1" ]] || { echo "Input image not found: $IMAGE1" >&2; exit 1; }
+[[ -f "$IMAGE2" ]] || { echo "Input image not found: $IMAGE2" >&2; exit 1; }
+#[[ -f "$IMAGE3" ]] || { echo "Input image not found: $IMAGE3" >&2; exit 1; }
+[[ -f "$PROMPTFILE" ]] || { echo "Prompt file not found: $PROMPTFILE" >&2; exit 1; }
+
+exec "$PYTHON" "$SCRIPT" \
+    --strategy context_parallel \
+    --reference-image "$IMAGE2" \
+    --reference-image "$IMAGE1" \
+    --prompt-file "$PROMPTFILE" \
+    --frames 345 \
+    --width 1056 \
+    --height 576 \
+    --steps 40 \
+    --seed 42 \
+    --reference-short-edge 1536 \
+    --output-dir "$ROOT/project_4/outputs" \
+    --output "part2d.mp4" \
+    "$@"

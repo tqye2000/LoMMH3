@@ -1,0 +1,5 @@
+# MiniMax Studio (NiceGUI app) - installed into its own WSL venv, not the GPU venv.
+nicegui==3.18.0
+pydantic==2.14.1
+av==19.0.2
+pillow==13.0.0
