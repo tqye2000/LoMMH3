@@ -514,11 +514,21 @@ class ProjectWorkspace:
                           ).props("flat dense")
             ui.button("Reuse seed", on_click=lambda: self.apply_params(
                 {**self.service.step_params(self.pid, step.id).model_dump(), "seed": take.seed})).props("flat dense")
+            ui.button("Delete take", icon="delete", on_click=lambda: self.confirm_delete_take(step.id, take.id)
+                      ).props("flat dense color=negative")
         with ui.row().classes("gap-2"):
             for kind in ("first", "last"):
                 with ui.column().classes("items-center gap-0"):
                     ui.image(take_url(self.pid, step.id, take.id, kind)).classes("w-40").props("fit=contain")
                     ui.label(f"{kind} frame").classes("text-caption")
+                    ui.button("Add to pool", icon="add_photo_alternate",
+                              on_click=lambda k=kind: self.add_frame_to_pool(step.id, take.id, k)
+                              ).props("flat dense no-caps size=sm")
+                    if kind == "last":
+                        ui.button("Use in next step", icon="redo",
+                                  on_click=lambda: self.use_in_next_step(step.id, take.id)
+                                  ).props("flat dense no-caps size=sm").tooltip(
+                            "Bind this frame to image slot 1 of the next step (created if missing)")
         ui.label("All takes").classes("text-subtitle2 q-mt-sm")
         for other in reversed(step.takes):
             label = f"{other.id} - seed {other.seed}" + (" (selected)" if other.id == step.selected_take else "")
@@ -528,6 +538,44 @@ class ProjectWorkspace:
     def show_take(self, step_id: str, take_id: str) -> None:
         self.view_take[step_id] = take_id
         self.takes.refresh()
+
+    def confirm_delete_take(self, step_id: str, take_id: str) -> None:
+        with ui.dialog() as dialog, ui.card():
+            ui.label(f"Delete take {take_id}?").classes("text-h6")
+            ui.label("Its video, run log, and frame images are removed permanently. "
+                     "Images already copied to the pool are kept.").classes("text-caption")
+
+            def delete() -> None:
+                try:
+                    self.service.delete_take(self.pid, step_id, take_id)
+                except (ServiceError, OSError) as exc:
+                    ui.notify(str(exc), type="negative")
+                    return
+                self.view_take.pop(step_id, None)
+                dialog.close()
+                self.takes.refresh()
+                ui.notify(f"Deleted take {take_id}")
+            with ui.row():
+                ui.button("Delete", icon="delete", on_click=delete).props("color=negative")
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+        dialog.open()
+
+    def add_frame_to_pool(self, step_id: str, take_id: str, kind: str) -> None:
+        try:
+            asset, created = self.service.add_take_frame(self.pid, step_id, take_id, kind)
+        except (ServiceError, ImageRejected) as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        ui.notify(f"Added '{asset.name}' to the image pool" if created else f"Already in the pool as '{asset.name}'")
+
+    def use_in_next_step(self, step_id: str, take_id: str) -> None:
+        try:
+            target = self.service.use_last_frame_in_next_step(self.pid, step_id, take_id)
+        except (ServiceError, ImageRejected) as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        self.select_step(target.id)
+        ui.notify(f"Last frame set as image 1 of '{target.name}'")
 
     # -- image pool ------------------------------------------------------
     def pool_panel(self) -> None:
@@ -587,8 +635,10 @@ class ProjectWorkspace:
         ui.label(f"{job.step_name} - {job.id} ({job.state})").classes("text-caption")
         if job.error:
             ui.label(job.error).classes("text-negative").style(MONO)
-        ui.label(self.service.job_log(job) or "(no output yet)").classes("w-full bg-grey-2 q-pa-sm").style(
-            MONO + "; max-height: 360px; overflow-y: auto")
+        # column-reverse keeps the scroll position pinned to the newest lines across refreshes
+        with ui.element("div").classes("w-full bg-grey-2 q-pa-sm").style(
+                "max-height: 360px; overflow-y: auto; display: flex; flex-direction: column-reverse"):
+            ui.label(self.service.job_log(job) or "(no output yet)").style(MONO)
 
     def refresh_running_log(self) -> None:
         job = self._log_job()

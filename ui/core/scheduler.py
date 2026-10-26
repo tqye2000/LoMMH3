@@ -40,7 +40,9 @@ def tail_lines(path: Path, lines: int) -> str:
             text = handle.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
-    return "\n".join([line for line in text.splitlines() if line.strip()][-lines:])
+    # Keep only the final state of lines redrawn with \r (tqdm progress bars).
+    rows = (line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n"))
+    return "\n".join([row for row in rows if row.strip()][-lines:])
 
 
 class Scheduler:

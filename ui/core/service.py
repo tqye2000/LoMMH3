@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,27 @@ class Service:
     def add_image(self, project_id: str, filename: str, data: bytes) -> tuple[ImageAsset, bool]:
         return self.register_image(project_id, self.prepare_image(project_id, filename, data))
 
+    def add_take_frame(self, project_id: str, step_id: str, take_id: str, kind: str) -> tuple[ImageAsset, bool]:
+        """Copy a take's first or last frame into the image pool."""
+        if kind not in ("first", "last"):
+            raise ServiceError(f"Unknown frame: {kind}")
+        path = self.take_file(project_id, step_id, take_id, kind)
+        step = self.get_project(project_id).step(step_id)
+        return self.add_image(project_id, f"{step.name} {take_id} {kind}{path.suffix}", path.read_bytes())
+
+    def use_last_frame_in_next_step(self, project_id: str, step_id: str, take_id: str) -> GenerateStep:
+        """Bind a take's last frame to image slot 1 of the following step, creating it if needed."""
+        asset, _created = self.add_take_frame(project_id, step_id, take_id, "last")
+        steps = self.get_project(project_id).steps
+        index = next(i for i, s in enumerate(steps) if s.id == step_id)
+        target = steps[index + 1] if index + 1 < len(steps) else self.add_step(project_id)
+        if target.mode == "ref2va":
+            images = [ImageBinding(asset_id=asset.id), *target.images[1:]]
+            self.update_step(project_id, target.id, images=images)
+        else:
+            self.update_step(project_id, target.id, mode="fl2va", images=[ImageBinding(asset_id=asset.id)])
+        return self.get_project(project_id).step(target.id)
+
     # -- steps and prompts -----------------------------------------------
     def add_step(self, project_id: str, name: str = "") -> GenerateStep:
         project = self.get_project(project_id)
@@ -183,6 +205,24 @@ class Service:
         step.selected_take = take_id
         self.store.save_project(project)
         self.store.append_activity(project_id, "take.selected", f"'{step.name}': selected take {take_id}",
+                                   step_id=step_id, take_id=take_id)
+
+    def delete_take(self, project_id: str, step_id: str, take_id: str) -> None:
+        """Remove a take and its output files; the selection falls back to the newest remaining take."""
+        project = self.get_project(project_id)
+        step = project.step(step_id)
+        take = next((t for t in step.takes if t.id == check_id(take_id)), None)
+        if take is None:
+            raise ServiceError(f"Unknown take: {take_id}")
+        step.takes.remove(take)
+        if step.selected_take == take_id:
+            step.selected_take = step.takes[-1].id if step.takes else None
+        self.store.save_project(project)
+        root = self.store.project_dir(project_id).resolve()
+        take_dir = (root / "outputs" / check_id(step_id) / take_id).resolve()
+        if take_dir.is_relative_to(root / "outputs") and take_dir.is_dir():
+            shutil.rmtree(take_dir)
+        self.store.append_activity(project_id, "take.deleted", f"'{step.name}': deleted take {take_id}",
                                    step_id=step_id, take_id=take_id)
 
     def validate_step(self, project_id: str, step_id: str) -> list[str]:

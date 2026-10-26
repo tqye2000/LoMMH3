@@ -48,16 +48,19 @@ def setup() -> None:
 
     app.on_startup(on_startup)
     app.on_shutdown(on_shutdown)
-    ui.run(
-        host=settings.host,
-        port=settings.port,
-        title="MiniMax Studio",
-        storage_secret=secrets.token_urlsafe(32),
-        reload=False,
-        show=False,
-        show_welcome_message=False,
-        fastapi_docs=False,
-    )
+    try:
+        ui.run(
+            host=settings.host,
+            port=settings.port,
+            title="MiniMax Studio",
+            storage_secret=secrets.token_urlsafe(32),
+            reload=False,
+            show=False,
+            show_welcome_message=False,
+            fastapi_docs=False,
+        )
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ in {"__main__", "__mp_main__"}:

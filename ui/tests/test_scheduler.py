@@ -38,6 +38,22 @@ async def test_successful_job_records_take_and_frames(service: Service, monkeypa
     types = [e.type for e in service.activity(pid)]
     assert types[:3] == ["job.succeeded", "job.started", "job.queued"]
 
+    frame, created = service.add_take_frame(pid, sid, job.take_id, "last")
+    assert created and frame.name == f"Scene 1 {job.take_id} last.png"
+    assert service.add_take_frame(pid, sid, job.take_id, "last") == (frame, False)
+
+    nxt = service.use_last_frame_in_next_step(pid, sid, job.take_id)
+    assert nxt.id != sid and nxt.mode == "fl2va"
+    assert nxt.images[0] == ImageBinding(asset_id=frame.id) and not nxt.images[1].enabled
+    assert service.use_last_frame_in_next_step(pid, sid, job.take_id).id == nxt.id
+    assert len(service.get_project(pid).steps) == 2
+
+    take_dir = service.take_file(pid, sid, job.take_id, "video").parent
+    service.delete_take(pid, sid, job.take_id)
+    step = service.get_project(pid).step(sid)
+    assert step.takes == [] and step.selected_take is None and not take_dir.exists()
+    assert service.get_project(pid).asset(frame.id)
+
 
 async def test_failed_job_reports_error(service: Service, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_GEN_MODE", "fail")
