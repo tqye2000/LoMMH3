@@ -94,6 +94,27 @@ class GenerateStep(_Model):
     selected_take: str | None = None
 
 
+class ExportInput(_Model):
+    step_id: str
+    step_name: str
+    take_id: str
+
+
+class Export(_Model):
+    id: str
+    name: str
+    created_utc: str
+    video: str  # project-relative
+    inputs: list[ExportInput]
+    width: int
+    height: int
+    fps: float
+    frames: int
+    duration_s: float
+    has_audio: bool
+    runtime_s: float | None = None
+
+
 class Project(_Model):
     schema_version: int = SCHEMA_VERSION
     id: str
@@ -104,12 +125,19 @@ class Project(_Model):
     defaults: GenParams = Field(default_factory=GenParams)
     assets: list[ImageAsset] = Field(default_factory=list)
     steps: list[GenerateStep] = Field(default_factory=list)
+    exports: list[Export] = Field(default_factory=list)
 
     def step(self, step_id: str) -> GenerateStep:
         for step in self.steps:
             if step.id == step_id:
                 return step
         raise KeyError(f"Unknown step: {step_id}")
+
+    def export(self, export_id: str) -> Export:
+        for export in self.exports:
+            if export.id == export_id:
+                return export
+        raise KeyError(f"Unknown export: {export_id}")
 
     def asset(self, asset_id: str) -> ImageAsset:
         for asset in self.assets:
@@ -154,6 +182,7 @@ class Job(_Model):
     step_name: str
     step_revision: int
     take_id: str
+    seq: int = 0  # queue order; 0 for jobs saved before it existed
     state: JobState = "queued"
     wait_reason: str | None = None
     cancel_requested: bool = False
@@ -166,6 +195,11 @@ class Job(_Model):
     progress: Progress = Field(default_factory=Progress)
     exit_code: int | None = None
     error: str | None = None
+
+
+def job_order(job: Job) -> tuple:
+    # Not created_utc alone: it has 1 s resolution and IDs are random, which broke FIFO order.
+    return (job.seq, job.created_utc, job.id)
 
 
 class ActivityEvent(_Model):

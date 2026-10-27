@@ -29,6 +29,9 @@ async def test_login_create_project_and_add_step(user: User) -> None:
     user.find("Add step").click()
     await user.should_see("Scene 1")
     await user.should_see("Generate")
+    user.find("Exports").click()
+    await user.should_see("no selected take")
+    await user.should_see("No exports yet.")
 
 
 async def test_media_requires_session(user: User) -> None:

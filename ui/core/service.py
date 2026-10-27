@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +12,11 @@ from pydantic import ValidationError
 from . import constants as C
 from .generation import build_request, effective_params, validate_step
 from .images import ingest_image
-from .models import GenerateStep, GenParams, ImageAsset, ImageBinding, Job, Project, PromptRevision, new_id, utc_now
-from .preflight import Check, run_preflight
+from .models import (
+    Export, ExportInput, GenerateStep, GenParams, ImageAsset, ImageBinding, Job, Project, PromptRevision, new_id,
+    utc_now,
+)
+from .preflight import Check, load_repo_module, run_preflight
 from .scheduler import Scheduler, tail_lines
 from .settings import Settings
 from .storage import Store, check_id
@@ -289,6 +293,68 @@ class Service:
     def preflight(self) -> list[Check]:
         return run_preflight(self.settings)
 
+    # -- exports ---------------------------------------------------------
+    def export_steps(self, project_id: str, step_ids: list[str], name: str = "") -> Export:
+        """Join the selected takes of ``step_ids``, in that order, into a new export.
+
+        Blocks while encoding; call it from a worker thread.
+        """
+        project = self.get_project(project_id)
+        if not step_ids:
+            raise ServiceError("Choose at least one step to export.")
+        inputs, errors = [], []
+        for step_id in step_ids:
+            try:
+                step = project.step(step_id)
+            except KeyError:
+                errors.append(f"Unknown step: {step_id}")
+                continue
+            if step.selected_take is None:
+                errors.append(f"'{step.name}' has no selected take.")
+                continue
+            inputs.append(ExportInput(step_id=step.id, step_name=step.name, take_id=step.selected_take))
+        if errors:
+            raise ServiceError(errors)
+        paths = [self.take_file(project_id, i.step_id, i.take_id, "video") for i in inputs]
+
+        name = name.strip()[:100] or f"Export {len(project.exports) + 1}"
+        export_id = new_id("exp")
+        relative = f"exports/{export_id}.mp4"
+        started = time.monotonic()
+        try:
+            joiner = load_repo_module(self.settings.repo_root, "join_videos_with_audio")
+            result = joiner.join_videos(paths, self.store.project_dir(project_id) / relative)
+        except Exception as exc:  # incompatible or undecodable inputs; nothing is published
+            self.store.append_activity(project_id, "export.failed", f"Export '{name}' failed: {exc}")
+            raise ServiceError(str(exc)) from exc
+
+        export = Export(
+            id=export_id, name=name, created_utc=utc_now(), video=relative, inputs=inputs,
+            width=result.width, height=result.height, fps=float(result.rate), frames=result.video_frames,
+            duration_s=round(result.duration_s, 3), has_audio=result.has_audio,
+            runtime_s=round(time.monotonic() - started, 1),
+        )
+        project = self.get_project(project_id)  # reload: it may have changed while encoding
+        project.exports.append(export)
+        self.store.save_project(project)
+        order = " + ".join(i.step_name for i in inputs)
+        self.store.append_activity(project_id, "export.created",
+                                   f"Export '{name}' created ({order}, {export.duration_s:.1f} s)",
+                                   details={"export_id": export_id})
+        return export
+
+    def delete_export(self, project_id: str, export_id: str) -> None:
+        project = self.get_project(project_id)
+        try:
+            export = project.export(check_id(export_id))
+        except KeyError as exc:
+            raise ServiceError(f"Unknown export: {export_id}") from exc
+        project.exports.remove(export)
+        self.store.save_project(project)
+        (self.store.project_dir(project_id) / "exports" / f"{export_id}.mp4").unlink(missing_ok=True)
+        self.store.append_activity(project_id, "export.deleted", f"Export '{export.name}' deleted",
+                                   details={"export_id": export_id})
+
     # -- media -----------------------------------------------------------
     def media_file(self, project_id: str, relative: str) -> Path:
         """Resolve a project-relative media path, refusing anything outside the project."""
@@ -315,3 +381,10 @@ class Service:
             raise ServiceError("Media not found.")
         relative = {"video": take.video, "first": take.first_frame, "last": take.last_frame}[kind]
         return self.media_file(project_id, relative)
+
+    def export_file(self, project_id: str, export_id: str) -> tuple[Path, Export]:
+        try:
+            export = self.get_project(project_id).export(export_id)
+        except KeyError as exc:
+            raise ServiceError("Media not found.") from exc
+        return self.media_file(project_id, export.video), export

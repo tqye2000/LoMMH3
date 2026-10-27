@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .models import SCHEMA_VERSION, ActivityEvent, Job, Project, new_id, utc_now
+from .models import SCHEMA_VERSION, ActivityEvent, Job, Project, job_order, new_id, utc_now
 
 log = logging.getLogger(__name__)
 
@@ -175,7 +175,7 @@ class Store:
                 jobs.append(read_model(path, Job))
             except StorageError as exc:
                 log.error("Skipping unreadable job: %s", exc)
-        return sorted(jobs, key=lambda j: (j.created_utc, j.id))
+        return sorted(jobs, key=job_order)
 
     # -- activity log ----------------------------------------------------
     def activity_path(self, project_id: str) -> Path:

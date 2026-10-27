@@ -10,12 +10,12 @@ from nicegui import run, ui
 from ui.core import constants as C
 from ui.core.generation import validate_params
 from ui.core.images import ImageRejected
-from ui.core.models import GenerateStep, GenParams, Job, Project
+from ui.core.models import Export, GenerateStep, GenParams, Job, Project
 from ui.core.service import ServiceError
 from ui.core.storage import StorageError
 
 from . import state
-from .media import asset_url, take_url
+from .media import asset_url, export_url, take_url
 
 STATE_COLORS = {
     "queued": "grey", "blocked": "brown", "running": "primary", "succeeded": "positive",
@@ -244,6 +244,11 @@ class ProjectWorkspace:
         self.step_id: str | None = project.steps[0].id if project.steps else None
         self.log_job_id: str | None = None
         self.view_take: dict[str, str] = {}
+        self.export_order: list[str] = []  # step IDs in export order
+        self.export_skip: set[str] = set()
+        self.view_export: str | None = None
+        self._export_steps_sig: tuple = ()
+        self._export_history_sig: tuple = ()
 
     @property
     def project(self) -> Project:
@@ -282,11 +287,14 @@ class ProjectWorkspace:
                     with ui.tabs().classes("w-full") as tabs:
                         takes_tab = ui.tab("Takes", icon="movie")
                         pool_tab = ui.tab("Image pool", icon="photo_library")
+                        exports_tab = ui.tab("Exports", icon="video_library")
                     with ui.tab_panels(tabs, value=takes_tab).classes("w-full"):
                         with ui.tab_panel(takes_tab):
                             self.takes()
                         with ui.tab_panel(pool_tab):
                             self.pool_panel()
+                        with ui.tab_panel(exports_tab):
+                            self.exports_panel()
 
         ui.separator()
         with ui.tabs().classes("w-full") as bottom_tabs:
@@ -311,6 +319,12 @@ class ProjectWorkspace:
         self.pool.refresh()
         self.jobs.refresh()
         self.activity.refresh()
+        # Only redraw export views when they changed, so playback and checkboxes are not reset.
+        project = self.project
+        if self._steps_signature(project) != self._export_steps_sig:
+            self.export_steps.refresh()
+        if tuple(e.id for e in project.exports) != self._export_history_sig:
+            self.export_history.refresh()
 
     # -- steps -----------------------------------------------------------
     @ui.refreshable_method
@@ -332,6 +346,7 @@ class ProjectWorkspace:
     def add_step(self) -> None:
         step = self.service.add_step(self.pid)
         self.select_step(step.id)
+        self.export_steps.refresh()
 
     # -- editor ----------------------------------------------------------
     @ui.refreshable_method
@@ -608,6 +623,131 @@ class ProjectWorkspace:
                     ui.image(asset_url(self.pid, asset.id)).classes("w-full h-28").props("fit=contain")
                     ui.label(asset.name).classes("text-caption ellipsis w-full")
                     ui.label(f"{asset.width}x{asset.height}").classes("text-caption text-grey")
+
+    # -- exports ---------------------------------------------------------
+    @staticmethod
+    def _steps_signature(project: Project) -> tuple:
+        return tuple((s.id, s.name, s.selected_take) for s in project.steps)
+
+    def _ordered_steps(self, project: Project) -> list[GenerateStep]:
+        """Steps in the chosen export order; steps added later go to the end."""
+        ids = [s.id for s in project.steps]
+        self.export_order = [i for i in self.export_order if i in ids] + [
+            i for i in ids if i not in self.export_order]
+        return [project.step(i) for i in self.export_order]
+
+    def exports_panel(self) -> None:
+        ui.label("Join the selected take of each checked step into one video, in this order. "
+                 "Clips must share resolution and frame rate.").classes("text-caption text-grey")
+        self.export_steps()
+        with ui.row().classes("w-full items-center"):
+            self.export_name = ui.input("Export name", placeholder="Export N").classes("col")
+            self.export_button = ui.button("Export video", icon="movie", on_click=self.run_export).props(
+                "unelevated color=primary")
+            self.export_spinner = ui.spinner()
+            self.export_spinner.set_visibility(False)
+        ui.separator().classes("q-my-sm")
+        self.export_history()
+
+    @ui.refreshable_method
+    def export_steps(self) -> None:
+        project = self.project
+        self._export_steps_sig = self._steps_signature(project)
+        steps = self._ordered_steps(project)
+        if not steps:
+            ui.label("Add and generate steps first.").classes("text-grey")
+        for index, step in enumerate(steps):
+            with ui.row().classes("w-full items-center no-wrap gap-1"):
+                usable = step.selected_take is not None
+                box = ui.checkbox(value=usable and step.id not in self.export_skip,
+                                  on_change=lambda e, s=step.id: self.toggle_export_step(s, e.value))
+                box.set_enabled(usable)
+                ui.label(step.name).classes("col ellipsis")
+                ui.label(step.selected_take or "no selected take").classes("text-caption text-grey")
+                up = ui.button(icon="arrow_upward", on_click=lambda i=index: self.move_export_step(i, -1)).props(
+                    "flat dense round size=sm").tooltip("Move up")
+                up.set_enabled(index > 0)
+                down = ui.button(icon="arrow_downward", on_click=lambda i=index: self.move_export_step(i, 1)).props(
+                    "flat dense round size=sm").tooltip("Move down")
+                down.set_enabled(index < len(steps) - 1)
+
+    def toggle_export_step(self, step_id: str, checked: bool) -> None:
+        if checked:
+            self.export_skip.discard(step_id)
+        else:
+            self.export_skip.add(step_id)
+
+    def move_export_step(self, index: int, offset: int) -> None:
+        order = self.export_order
+        order[index], order[index + offset] = order[index + offset], order[index]
+        self.export_steps.refresh()
+
+    async def run_export(self) -> None:
+        project = self.project
+        step_ids = [s.id for s in self._ordered_steps(project)
+                    if s.selected_take is not None and s.id not in self.export_skip]
+        self.export_button.disable()
+        self.export_spinner.set_visibility(True)
+        try:
+            export = await run.io_bound(self.service.export_steps, self.pid, step_ids, self.export_name.value or "")
+        except Exception as exc:  # report anything, so a click never fails silently
+            _notify_error(exc)
+            return
+        finally:
+            self.export_button.enable()
+            self.export_spinner.set_visibility(False)
+        self.export_name.value = ""
+        self.view_export = export.id
+        self.export_history.refresh()
+        ui.notify(f"Exported '{export.name}' ({export.duration_s:.1f} s)", type="positive")
+
+    @ui.refreshable_method
+    def export_history(self) -> None:
+        project = self.project
+        self._export_history_sig = tuple(e.id for e in project.exports)
+        if not project.exports:
+            ui.label("No exports yet.").classes("text-grey")
+            return
+        export = next((e for e in project.exports if e.id == self.view_export), project.exports[-1])
+        ui.video(export_url(self.pid, export.id)).classes("w-full")
+        ui.label(f"{export.name}: {export.duration_s:.1f} s, {export.width}x{export.height}, {export.fps:g} fps"
+                 + ("" if export.has_audio else ", no audio")).classes("text-caption")
+        ui.label(" + ".join(f"{i.step_name} ({i.take_id})" for i in export.inputs)).classes(
+            "text-caption text-grey")
+        with ui.row().classes("gap-2"):
+            ui.button("Download", icon="download",
+                      on_click=lambda: ui.download.from_url(export_url(self.pid, export.id, download=True))
+                      ).props("flat dense")
+            ui.button("Delete export", icon="delete", on_click=lambda: self.confirm_delete_export(export)
+                      ).props("flat dense color=negative")
+        ui.label("All exports").classes("text-subtitle2 q-mt-sm")
+        for other in reversed(project.exports):
+            ui.button(f"{other.name} - {other.duration_s:.1f} s", on_click=lambda e=other: self.show_export(e.id)
+                      ).props(f"{'unelevated' if other.id == export.id else 'flat'} dense no-caps")
+
+    def show_export(self, export_id: str) -> None:
+        self.view_export = export_id
+        self.export_history.refresh()
+
+    def confirm_delete_export(self, export: Export) -> None:
+        with ui.dialog() as dialog, ui.card():
+            ui.label(f"Delete export '{export.name}'?").classes("text-h6")
+            ui.label("The joined video is removed permanently; the takes it was built from are kept.").classes(
+                "text-caption")
+
+            def delete() -> None:
+                try:
+                    self.service.delete_export(self.pid, export.id)
+                except (ServiceError, StorageError, OSError) as exc:
+                    _notify_error(exc)
+                    return
+                dialog.close()
+                self.export_history.refresh()
+                ui.notify(f"Deleted export '{export.name}'")
+            with ui.row():
+                ui.button("Delete", icon="delete", on_click=delete).props("color=negative")
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+        dialog.open()
 
     # -- jobs, log, activity ---------------------------------------------
     @ui.refreshable_method

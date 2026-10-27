@@ -14,7 +14,7 @@ from typing import Any
 
 from . import procs
 from .generation import build_command, build_env
-from .models import TERMINAL_STATES, Job, ProcessInfo, Progress, Take, utc_now
+from .models import TERMINAL_STATES, Job, ProcessInfo, Progress, Take, job_order, utc_now
 from .preflight import launch_check, load_repo_module
 from .settings import Settings
 from .storage import Store, atomic_write_text
@@ -72,7 +72,7 @@ class Scheduler:
 
     def ordered_jobs(self, project_id: str | None = None) -> list[Job]:
         jobs = [j for j in self.jobs.values() if project_id is None or j.project_id == project_id]
-        return sorted(jobs, key=lambda j: (j.created_utc, j.id))
+        return sorted(jobs, key=job_order)
 
     def running_jobs(self) -> list[Job]:
         return [j for j in self.ordered_jobs() if j.state == "running"]
@@ -89,6 +89,7 @@ class Scheduler:
 
     # -- commands --------------------------------------------------------
     def enqueue(self, job: Job) -> None:
+        job.seq = max((j.seq for j in self.jobs.values()), default=0) + 1
         self._save(job)
         self._activity(job, "job.queued", f"{job.step_name}: queued (seed {job.request.params.seed})")
 

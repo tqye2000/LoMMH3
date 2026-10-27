@@ -6,6 +6,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -41,7 +42,13 @@ def load_repo_module(repo_root: Path, name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load {name}.py from {repo_root}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Must be registered before executing: @dataclass looks its module up in sys.modules.
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 
