@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from ui.core import constants as C
 from ui.core.generation import build_command, build_env
 from ui.core.images import ImageRejected
-from ui.core.models import ImageBinding
+from ui.core.models import GenerateStep, ImageBinding
 from ui.core.service import Service, ServiceError
 
 from .conftest import png_bytes
@@ -44,7 +45,7 @@ def test_mode_rules(service: Service) -> None:
     service.save_prompt(pid, step.id, "A cat practices kung fu.")
 
     service.update_step(pid, step.id, mode="ref2va")
-    assert any("one or two enabled images" in e for e in service.validate_step(pid, step.id))
+    assert any("Reference mode needs" in e for e in service.validate_step(pid, step.id))
 
     both = [ImageBinding(asset_id=ids[0]), ImageBinding(asset_id=ids[1])]
     service.update_step(pid, step.id, mode="fl2va", images=both)
@@ -78,6 +79,21 @@ def test_request_uses_only_selected_images_in_slot_order(service: Service, tmp_p
     for flag in ("--no-auto-download", "--run-id", "--progress-jsonl", "--reference-short-edge"):
         assert flag in cmd
     assert cmd[cmd.index("--run-id") + 1] == job.id
+
+
+def test_four_reference_images_and_legacy_steps_are_padded(service: Service, tmp_path: Path) -> None:
+    pid, ids = _pool(service, 4)
+    step = service.add_step(pid, "Four")
+    service.save_prompt(pid, step.id, "Pictures 1 to 4 meet.")
+    service.update_step(pid, step.id, mode="ref2va",
+                        images=[ImageBinding(asset_id=i) for i in reversed(ids)])
+    job = service.run_step(pid, step.id)
+    cmd = build_command(service.settings, job, service.store.project_dir(pid), tmp_path / "j", tmp_path / "t")
+    assert cmd.count("--reference-image") == 4
+
+    legacy = GenerateStep(id="s", name="Old", images=[ImageBinding(asset_id=ids[0])] * 2)
+    assert len(legacy.images) == C.IMAGE_SLOTS
+    assert [b.enabled for b in legacy.images[2:]] == [False] * (C.IMAGE_SLOTS - 2)
 
 
 def test_random_seed_is_frozen_and_explicit_seed_kept(service: Service) -> None:

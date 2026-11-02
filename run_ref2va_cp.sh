@@ -43,21 +43,25 @@ export CP_WORLD_SIZE="${CP_WORLD_SIZE:-4}"
 # paravirtualized GPU lacks the CUDA VMM APIs that feature needs, so it fails
 # with spurious OOM. LoMMH.py auto-selects a WSL-safe allocator config.
 
-# Reference images for image-to-video generation (Ref2VA).
-IMAGE1="$ROOT/project_4/outputs/part2c_n_last.jpg"
-IMAGE2="$ROOT/project_4/male_3.jpg"
+# Reference images for Ref2VA, passed in order as Picture 1..4. Leave unused ones unset.
+IMAGE1="$ROOT/project_4/male_3.jpg"
+IMAGE2="$ROOT/project_4/outputs/part2c_n_last.jpg"
 #IMAGE3="$ROOT/project_4/female.jpg"
+#IMAGE4=""
 PROMPTFILE="$ROOT/project_4/prompt2d.txt"
 
-[[ -f "$IMAGE1" ]] || { echo "Input image not found: $IMAGE1" >&2; exit 1; }
-[[ -f "$IMAGE2" ]] || { echo "Input image not found: $IMAGE2" >&2; exit 1; }
-#[[ -f "$IMAGE3" ]] || { echo "Input image not found: $IMAGE3" >&2; exit 1; }
+REF_ARGS=()
+for img in "${IMAGE1:-}" "${IMAGE2:-}" "${IMAGE3:-}" "${IMAGE4:-}"; do
+    [[ -n "$img" ]] || continue
+    [[ -f "$img" ]] || { echo "Input image not found: $img" >&2; exit 1; }
+    REF_ARGS+=(--reference-image "$img")
+done
+(( ${#REF_ARGS[@]} > 0 )) || { echo "Set at least one of IMAGE1..IMAGE4" >&2; exit 1; }
 [[ -f "$PROMPTFILE" ]] || { echo "Prompt file not found: $PROMPTFILE" >&2; exit 1; }
 
 exec "$PYTHON" "$SCRIPT" \
     --strategy context_parallel \
-    --reference-image "$IMAGE2" \
-    --reference-image "$IMAGE1" \
+    "${REF_ARGS[@]}" \
     --prompt-file "$PROMPTFILE" \
     --frames 345 \
     --width 1056 \

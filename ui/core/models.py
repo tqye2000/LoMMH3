@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from . import constants as C
 
@@ -92,6 +92,12 @@ class GenerateStep(_Model):
     overrides: dict[str, Any] = Field(default_factory=dict)
     takes: list[Take] = Field(default_factory=list)
     selected_take: str | None = None
+
+    @field_validator("images")
+    @classmethod
+    def _pad_images(cls, images: list[ImageBinding]) -> list[ImageBinding]:
+        # Projects saved with fewer slots gain empty ones on load.
+        return images + [ImageBinding(enabled=False) for _ in range(C.IMAGE_SLOTS - len(images))]
 
 
 class ExportInput(_Model):

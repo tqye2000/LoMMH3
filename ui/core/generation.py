@@ -81,7 +81,7 @@ def validate_step(project: Project, step: GenerateStep, prompt_text: str) -> lis
     if step.mode == "fl2va" and len(images) != 1:
         errors.append("First-frame mode needs exactly one enabled image.")
     if step.mode == "ref2va" and not images:
-        errors.append("Reference mode needs one or two enabled images.")
+        errors.append(f"Reference mode needs 1 to {C.IMAGE_SLOTS} enabled images.")
     errors += validate_params(effective_params(project, step), step.mode)
     return errors
 

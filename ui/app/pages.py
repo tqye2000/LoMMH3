@@ -461,8 +461,13 @@ class ProjectWorkspace:
                         ui.button(icon="clear", on_click=lambda i=index: self.set_slot(i, asset_id=None,
                                                                                          enabled=False)).props(
                             "flat dense round").tooltip("Clear slot")
-            if step.mode == "ref2va":
-                ui.button(icon="swap_horiz", on_click=self.swap_slots).props("flat round").tooltip("Swap order")
+                    if step.mode == "ref2va":
+                        with ui.row().classes("gap-1"):
+                            ui.button(icon="chevron_left", on_click=lambda i=index: self.move_slot(i, -1)).props(
+                                "flat dense round" + (" disable" if index == 0 else "")).tooltip("Move earlier")
+                            ui.button(icon="chevron_right", on_click=lambda i=index: self.move_slot(i, 1)).props(
+                                "flat dense round" + (" disable" if index == len(slots) - 1 else "")).tooltip(
+                                "Move later")
 
     def set_slot(self, index: int, **changes: Any) -> None:
         step = self.step()
@@ -476,11 +481,15 @@ class ProjectWorkspace:
         self._update(images=images)
         self.editor.refresh()
 
-    def swap_slots(self) -> None:
+    def move_slot(self, index: int, delta: int) -> None:
         step = self.step()
         if step is None:
             return
-        images = list(reversed([b.model_copy() for b in step.images]))
+        images = [b.model_copy() for b in step.images]
+        target = index + delta
+        if not 0 <= target < len(images):
+            return
+        images[index], images[target] = images[target], images[index]
         self._update(images=images)
         self.editor.refresh()
 

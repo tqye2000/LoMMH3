@@ -182,7 +182,7 @@ Extra arguments are forwarded by `run_local.ps1` to `LoMMH.py`.
 ## MiniMax Studio (web UI)
 
 A local NiceGUI app for creating projects, editing prompts, managing a pool of
-reference images, choosing up to two images per generation, and queueing
+reference images, choosing up to four images per generation, and queueing
 generations. It runs inside WSL2, launches `LoMMH.py` with the GPU venv, and is
 opened from a Windows browser. Design and roadmap: [docs/video-project-ui-implementation-plan.md](docs/video-project-ui-implementation-plan.md).
 

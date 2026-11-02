@@ -20,7 +20,7 @@ MAX_STEPS = 100
 SEED_MAX = 2**32 - 1
 
 # Per-generation UI limit; the model itself accepts up to 9 reference images.
-IMAGE_SLOTS = 2
+IMAGE_SLOTS = 4
 MODEL_MAX_REFERENCE_IMAGES = 9
 MIN_REFERENCE_SHORT_EDGE = 64
 MAX_REFERENCE_SHORT_EDGE = 4096
