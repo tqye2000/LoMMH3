@@ -1,4 +1,4 @@
-# MiniMax-H3 Local Test Harness
+# Q-Movie - A Simple AI Movie Maker
 
 This project runs the MiniMax-H3 video-and-audio model from the local Hugging Face cache. It uses the Diffusers modular pipeline and supports text-to-video, first-frame image-to-video, and reference-media generation from images or motion videos.
 
@@ -13,19 +13,30 @@ Generation is offline after the required model files are present. The script rew
 - Int8 quantisation and CPU/group offloading for smaller GPUs
 - Explicit multi-GPU placement for the `max_gpu` strategy (needs ~64 GB/GPU; see note below)
 - Context-parallel single-clip acceleration across GPUs with the `context_parallel` strategy (requires WSL2 or Linux — needs NCCL, which the Windows PyTorch wheels don't include)
-- MP4 output with the model-generated audio track
+- MP4 output with the model-generated audio track, plus a JSON run log per clip
 - UTF-8 prompt files for prompts containing Chinese or other non-ASCII text
+- Machine-readable progress events (`--progress-jsonl`) for front ends
+- Joining clips end-to-end with synchronized audio (`join_videos_with_audio.py`)
+- **MiniMax Studio**, a local web UI for multi-step projects, reference-image pools, a durable generation queue, takes, last-frame chaining, and video export
 
 ## Files
 
 - `LoMMH.py` — main command-line generation script
-- `ui/` — MiniMax Studio, a local web app for projects, prompts, reference images, and queued generations (see below)
+- `ui/` — MiniMax Studio web app (see [MiniMax Studio](#minimax-studio-web-ui))
+- `start_ui.ps1` — starts MiniMax Studio in WSL2 from Windows (`-Port`, `-Distro`)
 - `download_transformer_ref.py` — resumable downloader for the `ref2va` transformer partition
 - `save_video_frames.py` — saves the first and last frames of a video as PNG images
-- `run_local.ps1` — local PowerShell example using the reference-image workflow
-- `prompts/` — example UTF-8 prompts
-- `docs/` — prompt and reference-image notes
-- `outputs/` — generated MP4 files
+- `join_videos_with_audio.py` — joins two or more videos into one MP4, keeping audio in sync
+- `wsl_setup.sh` — one-time creation of the WSL2 GPU venv (`~/minimax-venv`, Linux `torch` with NCCL)
+- `stage_cache_wsl.sh` — copies the model cache onto WSL2 ext4 (`~/hf_models`) for faster loading
+- Windows launchers: `run_local.ps1`, `run_local_2.ps1`, `run_local_ref.ps1`, `run_local_cp.ps1`, `run_t2va.ps1`, `run_fl2va.ps1`
+- WSL2/Linux launchers: `run_local.sh`, `run_local_cp.sh`, `run_t2va.sh`, `run_fl2va.sh`, `run_ref2va.sh`, `run_ref2va_cp.sh` (context parallel), `run_ref2va_offload.sh` (single-GPU `auto_offload` for conditioner OOMs)
+- `test_minimax-h3_v0.py` — early standalone pipeline test with hard-coded settings
+- `prompts/`, `project_*/` — example UTF-8 prompts, reference images, and run logs
+- `docs/` — prompt notes, reference-image plan, and the UI implementation plan
+- `outputs/` — generated MP4 files and run logs
+
+The shell launchers honour `MINIMAX_VENV` (default `~/minimax-venv`), `HF_HOME` (default `~/hf_models` if staged, else `/mnt/d/hf_models`), and `CP_WORLD_SIZE` (default 4). Extra arguments are forwarded to `LoMMH.py`.
 
 ## Requirements
 
@@ -99,12 +110,14 @@ Every reference image is resized so its **short edge is 2048 px** (the released 
 
 This is a common cause of an out-of-memory error that happens early, during "Encoding prompt on each rank" (the Qwen3-VL conditioner), rather than during denoising — reducing `--width`/`--height` does not help that stage, because it runs before the generated canvas is touched, and under `context_parallel` the conditioner is not sharded across GPUs (only the denoise step is).
 
-Use `--reference-short-edge PX` to override the 2048 px default for all reference images in the request:
-|reference_image_short_edge	|Last frame encoded |Rel. reference cost|
-2048 (default)|	2048×3744|	1.0×  |
-1536          |	1536×2816|	~0.56×|
-1280	        | 1280×2336|	~0.39×|
-1024	        | 1024×1888|	~0.25×|
+Use `--reference-short-edge PX` (64–4096) to override the 2048 px default for all reference images in the request:
+
+| `--reference-short-edge` | Last frame encoded | Relative reference cost |
+| --- | --- | --- |
+| 2048 (default) | 2048×3744 | 1.0× |
+| 1536 | 1536×2816 | ~0.56× |
+| 1280 | 1280×2336 | ~0.39× |
+| 1024 | 1024×1888 | ~0.25× |
 
 ```powershell
 & '.venv\Scripts\python.exe' LoMMH.py `
@@ -181,10 +194,9 @@ Extra arguments are forwarded by `run_local.ps1` to `LoMMH.py`.
 
 ## MiniMax Studio (web UI)
 
-A local NiceGUI app for creating projects, editing prompts, managing a pool of
-reference images, choosing up to four images per generation, and queueing
-generations. It runs inside WSL2, launches `LoMMH.py` with the GPU venv, and is
-opened from a Windows browser. Design and roadmap: [docs/video-project-ui-implementation-plan.md](docs/video-project-ui-implementation-plan.md).
+A local NiceGUI app that runs inside WSL2, launches `LoMMH.py` with the GPU
+venv, and is opened from a Windows browser. Design and roadmap:
+[docs/video-project-ui-implementation-plan.md](docs/video-project-ui-implementation-plan.md).
 
 One-time setup (creates `~/minimax-ui-venv`, separate from the GPU venv):
 
@@ -192,19 +204,62 @@ One-time setup (creates `~/minimax-ui-venv`, separate from the GPU venv):
 wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/ui/setup_ui.sh
 ```
 
-Start the app, then open the printed `http://localhost:8080/login?token=...` link:
+Start the app, then open the printed `http://localhost:8080/login?token=...` link
+(Ctrl+C stops it):
 
 ```powershell
-wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/ui/run_ui.sh
+.\start_ui.ps1                # or: .\start_ui.ps1 -Port 8090
+wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/ui/run_ui.sh   # equivalent
 ```
 
-- Projects are stored under `~/minimax-ui-data` (override with `MINIMAX_UI_DATA`);
-  each project keeps a `project.log.jsonl` activity log.
-- Generations run one at a time. Closing the browser does not stop them, and a
-  restarted app reattaches to a generation that is still running.
-- **Stop after current** pauses the queue; the stop button on a job cancels it,
-  including all context-parallel GPU workers.
-- The login link changes on every start; only this machine can reach the app.
+### Current features
+
+- **Home page:** project list and creation, environment checks (GPU venv, model
+  snapshot and `transformer_ref` partition, GPU memory), and the global job queue.
+- **Projects and steps:** each project holds an ordered list of steps with
+  project-wide default parameters. A step has a mode (`t2va`, `fl2va`, `ref2va`),
+  a UTF-8 prompt, generation parameters (frames, size, steps, seed, strategy,
+  reference short edge), and validation before queueing.
+- **Image pool:** upload reference images to the project (validated and stored
+  immutably with thumbnails), then pick them into a step's slots. `ref2va` steps
+  have up to 4 ordered slots (the model allows 9); `fl2va` uses one first-frame slot.
+- **Takes:** every generation creates a take with video preview, first/last
+  frames, and run log. Select, delete, or reuse a take's seed; add its first or
+  last frame to the pool; or **Use in next step** to chain the last frame into
+  the following step for continuity.
+- **Queue:** generations run one at a time in submission order. Closing the
+  browser does not stop them, and a restarted app reattaches to a still-running
+  generation or marks it `interrupted`. **Stop after current** pauses the queue;
+  a job's stop button cancels it (including all context-parallel GPU workers);
+  failed or cancelled jobs can be retried. Live progress and per-job logs are shown.
+- **Exports:** choose and order steps, then join their selected takes into one
+  MP4 with synchronized audio (hard cuts; inputs must share resolution and frame
+  rate). Exports can be previewed, downloaded, and deleted.
+- **Activity:** each project keeps a `project.log.jsonl` activity log shown in
+  the Activity tab.
+
+Not yet implemented: the AI prompt assistant, reference-video inputs in the UI,
+assembly normalization (letterboxing, frame-rate conversion), and drag-and-drop
+step reordering.
+
+### Configuration
+
+Settings come from `<data-root>/settings.json`, overridden by environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MINIMAX_UI_DATA` | `~/minimax-ui-data` | Project data root |
+| `MINIMAX_UI_HOST` / `MINIMAX_UI_PORT` | `127.0.0.1` / `8080` | Bind address and port |
+| `MINIMAX_UI_ALLOWED_HOSTS` | `127.0.0.1,localhost` | Accepted `Host` headers |
+| `MINIMAX_GEN_PYTHON` | `~/minimax-venv/bin/python` | GPU venv interpreter |
+| `MINIMAX_GEN_SCRIPT` | `<repo>/LoMMH.py` | Generator script |
+| `HF_HOME` | `~/hf_models` if staged, else `/mnt/d/hf_models` | Model cache root |
+| `MINIMAX_UI_GPU_CHECK` / `MINIMAX_UI_MODEL_CHECK` | enabled | Set to `0` to skip the GPU or model preflight check |
+
+The login link changes on every start and the app binds to localhost only.
+Secrets such as `OPENAI_API_KEY` are stripped from the generator's environment.
+
+### Tests
 
 Run the tests (no GPU needed; a fake generator stands in for `LoMMH.py`):
 
@@ -233,25 +288,40 @@ are replaced. To use another destination directory:
 The script decodes the complete video stream rather than relying on duration
 metadata, ensuring the saved last image is the final decodable frame.
 
+## Joining clips
+
+`join_videos_with_audio.py` concatenates two or more videos in order into one
+H.264/AAC MP4. Inputs must share resolution and frame rate; each clip's audio is
+trimmed or padded with silence to its video length so later clips stay in sync,
+and clips without audio contribute silence.
+
+```powershell
+& '.venv\Scripts\python.exe' join_videos_with_audio.py `
+  project_3\outputs\part1.mp4 project_3\outputs\part2.mp4 project_3\outputs\joined.mp4
+```
+
+`--fps N` forces the output frame rate (default: the first input's rate).
+
 ## Command-line options
 
-| Option | Description |
-| --- | --- |
-| `--prompt TEXT` | Text prompt. |
-| `--prompt-file PATH` | Read a UTF-8 prompt file; overrides `--prompt`. |
-| `--image PATH` | First-frame image for `fl2va`. |
-| `--reference-image PATH` | Reference image for `ref2va`; repeat up to 9 times. |
-| `--reference-video PATH` | Motion/camera reference video for `ref2va`; repeat up to 3 times. The video's soundtrack is used as a reference audio track when present. |
-| `--frames N` | Requested frame count at 24 fps; automatically snapped to a valid value. |
-| `--height N` / `--width N` | Output dimensions; use multiples of 32. |
-| `--steps N` | Number of denoising steps. Lower values are faster but lower quality. |
-| `--seed N` | Random seed. |
-| `--strategy NAME` | `max_gpu`, `context_parallel`, `auto_offload`, `bf16_single`, or `multi_gpu`. |
-| `--output-dir PATH` | Destination directory; defaults to `outputs`. |
-| `--output NAME` | MP4 filename inside `--output-dir`. `.mp4` is added if omitted. |
-| `--no-auto-download` | Fail instead of downloading a missing `transformer_ref` partition. |
-| `--run-id ID` | Identifier recorded in the JSON run log. |
-| `--progress-jsonl PATH` | Append machine-readable progress events (stages, denoise steps, completion) to `PATH`. |
+| Option | Default | Description |
+| --- | --- | --- |
+| `--prompt TEXT` | built-in fox prompt | Text prompt. |
+| `--prompt-file PATH` | — | Read a UTF-8 prompt file; overrides `--prompt`. |
+| `--image PATH` | — | First-frame image for `fl2va`. |
+| `--reference-image PATH` | — | Reference image for `ref2va`; repeat up to 9 times. |
+| `--reference-video PATH` | — | Motion/camera reference video for `ref2va`; repeat up to 3 times. The video's soundtrack is used as a reference audio track when present. |
+| `--reference-short-edge PX` | 2048 | Short edge (64–4096) reference images are resized to before encoding. |
+| `--frames N` | 345 | Requested frame count at 24 fps; automatically snapped to a valid value. |
+| `--height N` / `--width N` | 544 / 960 | Output dimensions; use multiples of 32. |
+| `--steps N` | 30 | Number of denoising steps. Lower values are faster but lower quality. |
+| `--seed N` | 42 | Random seed. |
+| `--strategy NAME` | `max_gpu` | `max_gpu`, `context_parallel`, `auto_offload`, `bf16_single`, or `multi_gpu`. |
+| `--output-dir PATH` | `outputs` | Destination directory. |
+| `--output NAME` | by mode | MP4 filename inside `--output-dir`. `.mp4` is added if omitted. |
+| `--no-auto-download` | off | Fail instead of downloading a missing `transformer_ref` partition. |
+| `--run-id ID` | — | Identifier recorded in the JSON run log. |
+| `--progress-jsonl PATH` | — | Append machine-readable progress events (stages, denoise steps, completion) to `PATH`. |
 
 Run `--help` for the full argument descriptions and defaults:
 
@@ -381,7 +451,9 @@ Each output is an MP4 containing the generated video and audio. A JSON run log w
 - **VRAM or host-memory pressure:** use `--strategy auto_offload`, reduce `--frames`, lower `--width`/`--height`, or reduce `--steps`.
 - **Device mismatch errors:** do not shard one transformer across GPUs. Use the provided `max_gpu` placement instead.
 - **Prompt appears corrupted or uses unexpectedly high memory:** put non-ASCII text in a UTF-8 file and pass it with `--prompt-file`.
-- **Slow generation:** reduce `--steps` and resolution, or use `max_gpu` when enough GPUs are available.
+- **OOM during "Encoding prompt" with reference images:** lower `--reference-short-edge` or switch to `auto_offload` (see `run_ref2va_offload.sh`).
+- **`context_parallel` fails with "Distributed package doesn't have NCCL built in":** run it under WSL2/Linux, not native Windows.
+- **Slow generation:** reduce `--steps` and resolution, or use `context_parallel` across several GPUs (WSL2/Linux).
 
 ## Credits
 
