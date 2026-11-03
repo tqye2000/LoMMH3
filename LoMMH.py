@@ -12,6 +12,8 @@ Quick start
     python LoMMH.py                       # default T2VA clip
     python LoMMH.py --frames 345          # ~14.4 s (model max)
     python LoMMH.py --image first.jpg     # image-to-video (FL2VA)
+    python LoMMH.py --reference-image subject.png   # subject reference (REF2VA)
+    python LoMMH.py --reference-video motion.mp4     # motion/camera reference (REF2VA)
     python LoMMH.py --strategy auto_offload   # 24-32 GB VRAM
     python LoMMH.py --help                # all options
 
@@ -219,6 +221,7 @@ class Config:
     prompt_file: str | None = None
     image: str | None = None          # first-frame image → FL2VA (else T2VA)
     reference_images: list[str] = field(default_factory=list)  # subject refs → REF2VA
+    reference_videos: list[str] = field(default_factory=list)  # motion/camera refs → REF2VA
     reference_short_edge: int | None = None  # ref2va: override encode short edge (default 2048)
     num_frames: int = MAX_FRAMES      # 24 fps; snapped to 17*n+5 in [124, 345]
     height: int = 544                 # multiple of 32
@@ -229,6 +232,9 @@ class Config:
     device: str = "cuda"              # "mps" for Apple Silicon
     output_dir: Path = Path("outputs")
     output_filename: str | None = None  # custom MP4 filename; defaults by mode
+    no_auto_download: bool = False    # fail instead of downloading transformer_ref
+    run_id: str | None = None         # caller-supplied ID recorded in the run log
+    progress_jsonl: str | None = None  # append machine-readable progress events here
     # "max_gpu" only: each big model lives whole on its own GPU.
     transformer_gpu: int = 0
     conditioner_gpu: int = 1
@@ -237,6 +243,49 @@ class Config:
     @property
     def duration_s(self) -> float:
         return self.num_frames / FPS
+
+    @property
+    def has_references(self) -> bool:
+        """Whether any ref2va reference (image or video) was supplied."""
+        return bool(self.reference_images or self.reference_videos)
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable progress (--progress-jsonl)
+# ---------------------------------------------------------------------------
+_PROGRESS_PATH: str | None = None
+
+
+def _progress(event: str, **fields: Any) -> None:
+    """Append one JSON progress event (rank 0 only); no-op without --progress-jsonl."""
+    if _PROGRESS_PATH is None or int(os.environ.get("RANK", "0")) != 0:
+        return
+    record = {"ts": time.time(), "event": event, **fields}
+    with open(_PROGRESS_PATH, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _enable_progress(path: str | None) -> None:
+    """Route progress events to ``path`` and report denoise steps from Diffusers."""
+    global _PROGRESS_PATH
+    if path is None or _PROGRESS_PATH is not None:
+        return
+    _PROGRESS_PATH = path
+
+    import diffusers.modular_pipelines.modular_pipeline as modular_module
+
+    base_tqdm = getattr(modular_module, "tqdm")
+
+    class _ReportingTqdm(base_tqdm):  # type: ignore[misc, valid-type]
+        def update(self, n: float | None = 1) -> bool | None:
+            result = super().update(n)
+            # Own counter: a disabled bar never advances ``self.n``.
+            self._mm_steps = getattr(self, "_mm_steps", 0) + int(n or 0)
+            _progress("step", i=self._mm_steps, n=int(self.total or 0))
+            return result
+
+    # The modular denoise loop builds its bar via this module-level name.
+    setattr(modular_module, "tqdm", _ReportingTqdm)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +489,31 @@ def _workflow_for(config: Config) -> str:
     ``transformer`` and also serves plain ``t2va`` (its keyframe blocks stay
     dormant without an ``image``).
     """
-    return "ref2va" if config.reference_images else "fl2va"
+    return "ref2va" if config.has_references else "fl2va"
+
+
+def _build_references(config: Config) -> list:
+    """Decode the ref2va references into their in-modality dataclasses, in order.
+
+    The reference list is ordered — the order labels each reference in the prompt
+    presentation and lays it out on the shared audio/video rotary clock, so a
+    different order is a different request. Image references (``<Picture i>``)
+    come first, then video references (``<Video k>``, conditioned on together
+    with their own soundtrack).
+    """
+    from diffusers.modular_pipelines.minimax_h3.references import (
+        MiniMaxH3ImageReference,
+        MiniMaxH3VideoReference,
+    )
+
+    references: list = [
+        MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
+    ]
+    references += [
+        MiniMaxH3VideoReference.from_file(path) for path in config.reference_videos
+    ]
+    return references
+
 
 
 def _build_max_gpu(config: Config):
@@ -453,7 +526,7 @@ def _build_max_gpu(config: Config):
     stages (pipeline state follows a single execution device).
     """
     _require_max_gpu_memory(config)
-    if config.reference_images:
+    if config.has_references:
         return _build_max_gpu_ref2va(config)
 
     print(f"[MiniMax-H3]   transformer  -> cuda:{config.transformer_gpu} (int8, whole)")
@@ -623,7 +696,7 @@ def _build_auto_offload(config: Config):
     """Single GPU: int8 weights + block-level CPU streaming (24-32 GB VRAM)."""
     from diffusers.hooks.group_offloading import apply_group_offloading
 
-    ref2va = bool(config.reference_images)
+    ref2va = config.has_references
     pipe = ModularPipeline.from_pretrained(MODEL_INDEX)
     if ref2va:
         _apply_reference_short_edge(pipe, config)
@@ -703,10 +776,6 @@ def _build_context_parallel(config: Config) -> "_ContextParallelPlan":
             "[MiniMax-H3] context_parallel must be launched via _cp_spawn; run it "
             "with `python LoMMH.py --strategy context_parallel …` or run_local_cp.ps1."
         )
-    if config.image is not None:
-        raise ValueError(
-            "[MiniMax-H3] context_parallel supports t2va and ref2va only; omit --image."
-        )
     rank, world_size, local_rank = _dist_setup()
     device = torch.device(f"cuda:{local_rank}")
     return _ContextParallelPlan(rank, world_size, local_rank, device)
@@ -735,6 +804,7 @@ def _cp_worker(
 
     _dist_setup()
     main_proc = _is_main_process()
+    _enable_progress(config.progress_jsonl)
 
     if main_proc:
         config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -747,6 +817,7 @@ def _cp_worker(
         save_output(results, config, mode, requested_num_frames)
         total_minutes = (time.perf_counter() - run_started) / 60
         print(f"[MiniMax-H3] Total generation time: {total_minutes:.2f} mins")
+        _progress("done", minutes=round(total_minutes, 2))
 
     _dist_cleanup()
 
@@ -761,10 +832,6 @@ def _cp_spawn(config: Config, requested_num_frames: int, run_started: float) -> 
     """
     import torch.multiprocessing as mp
 
-    if config.image is not None:
-        raise ValueError(
-            "[MiniMax-H3] context_parallel supports t2va and ref2va only; omit --image."
-        )
     world_size = int(os.environ.get("CP_WORLD_SIZE", "0")) or torch.cuda.device_count()
     if world_size < 2:
         raise SystemExit(
@@ -786,9 +853,15 @@ def _cp_spawn(config: Config, requested_num_frames: int, run_started: float) -> 
 def _print_run_header(config: Config, mode: str) -> None:
     print(f"\n[MiniMax-H3] Mode:   {mode}")
     print(f"[MiniMax-H3] Prompt: {config.prompt}")
+    if config.image:
+        print(f"[MiniMax-H3] Image:  {config.image}")
     if config.reference_images:
         print(f"[MiniMax-H3] Refs:   {len(config.reference_images)} image(s)")
         for path in config.reference_images:
+            print(f"[MiniMax-H3]          - {path}")
+    if config.reference_videos:
+        print(f"[MiniMax-H3] Refs:   {len(config.reference_videos)} video(s)")
+        for path in config.reference_videos:
             print(f"[MiniMax-H3]          - {path}")
     print(
         f"[MiniMax-H3] Frames: {config.num_frames} (~{config.duration_s:.1f}s @ {FPS}fps)"
@@ -808,28 +881,30 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     outputs = ["videos", "audio", "sampling_rate"]
     device = plan.device
     generator = torch.Generator().manual_seed(config.seed)
-    ref2va = bool(config.reference_images)
-    mode = "ref2va" if ref2va else "t2va"
-    workflow_name = "ref2va" if ref2va else "t2va"
+    ref2va = config.has_references
+    fl2va = config.image is not None and not ref2va
+    conditioned = ref2va or fl2va  # both run before_encode + vae_encoder stages
+    mode = "ref2va" if ref2va else "fl2va" if fl2va else "t2va"
+    workflow_name = mode
     main_proc = _is_main_process()
 
-    references = None
-    if ref2va:
-        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
+    references = _build_references(config) if ref2va else None
+    keyframe = None
+    if fl2va and config.image is not None:
+        from diffusers.utils.loading_utils import load_image
 
-        references = [
-            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
-        ]
+        keyframe = load_image(config.image)
 
     if main_proc:
         _print_run_header(config, mode)
 
-    # Stage 1: prompt (+ references) -> prompt embeddings. Run on every rank so
-    # the denoise inputs are identical; only the transformer is collective.
+    # Stage 1: prompt (+ keyframe/references) -> prompt embeddings. Run on every
+    # rank so the denoise inputs are identical; only the transformer is collective.
     if main_proc:
         print("[MiniMax-H3] Encoding prompt on each rank …")
+    _progress("stage", name="encoding")
     text_encoder = _load_int8_text_encoder(device_map={"": str(device)})
-    if ref2va:
+    if conditioned:
         conditioner = _cp_workflow_stage(
             workflow_name, lambda name: name in ("before_encode", "text_encoder")
         )
@@ -847,17 +922,28 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
             height=config.height,
             width=config.width,
         )
+    elif fl2va:
+        state = conditioner(
+            prompt=config.prompt,
+            image=keyframe,
+            height=config.height,
+            width=config.width,
+        )
     else:
         state = conditioner(prompt=config.prompt)
     del conditioner, text_encoder
     _free_cuda()
 
-    # Stage 1b (ref2va only): references -> condition latents.
-    if ref2va:
+    # Stage 1b (fl2va/ref2va): keyframe or references -> condition latents.
+    if conditioned:
+        _progress("stage", name="reference_encoding")
         reference_encoder = _cp_workflow_stage(workflow_name, lambda name: name == "vae_encoder")
         reference_encoder.load_components(dtype=torch.bfloat16)
         reference_encoder.vae.to(device)
-        reference_encoder.audio_vae.to(device)
+        if hasattr(reference_encoder, "audio_vae"):
+            # fl2va's keyframe is video-only; only ref2va (its video references
+            # can carry audio) registers an audio_vae on this stage.
+            reference_encoder.audio_vae.to(device)
         state = reference_encoder(state=state)
         del reference_encoder
         _free_cuda()
@@ -865,24 +951,25 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     # Stage 2: context-parallel denoise on the per-rank transformer.
     if main_proc:
         print("[MiniMax-H3] Denoising (context-parallel) …")
+    _progress("stage", name="denoising", steps=config.steps)
     if ref2va:
         transformer = _load_int8_transformer_ref(device_map={"": str(device)})
-        denoiser = _cp_workflow_stage(workflow_name, lambda name: name.startswith("denoise"))
-        denoiser.update_components(transformer_ref=transformer)
     else:
         transformer = _load_int8_transformer(device_map={"": str(device)})
-        denoiser = _cp_workflow_stage(
-            workflow_name,
-            lambda name: name not in ("text_encoder", "decode.video", "decode.audio"),
-        )
+    denoiser = _cp_workflow_stage(workflow_name, lambda name: name.startswith("denoise"))
+    if ref2va:
+        denoiser.update_components(transformer_ref=transformer)
+    else:
         denoiser.update_components(transformer=transformer)
     denoiser.load_components(dtype=torch.bfloat16)
     _enable_context_parallel(transformer, plan.world_size)
 
     state = move_conditioning_state(state, device)
     if ref2va:
+        # before_encode already resolved num_frames/height/width into the state.
         state = denoiser(state=state, num_inference_steps=config.steps, generator=generator)
     else:
+        # fl2va/t2va resolve the video layout at denoise time.
         state = denoiser(
             state=state,
             num_frames=config.num_frames,
@@ -895,12 +982,8 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     _free_cuda()
 
     # Stage 3: decode video + audio on the same card.
-    if ref2va:
-        decoder = _cp_workflow_stage(workflow_name, lambda name: name.startswith("decode"))
-    else:
-        decoder = _cp_workflow_stage(
-            workflow_name, lambda name: name in ("decode.video", "decode.audio")
-        )
+    _progress("stage", name="decoding")
+    decoder = _cp_workflow_stage(workflow_name, lambda name: name.startswith("decode"))
     decoder.load_components(dtype=torch.bfloat16)
     decoder.vae.to(device)
     decoder.audio_vae.to(device)
@@ -934,11 +1017,7 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
 
     # Multi-GPU ref2va split (max_gpu): five workflow blocks across three GPUs.
     if isinstance(pipe, _Ref2VASplit):
-        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
-
-        references = [
-            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
-        ]
+        references = _build_references(config)
         transformer_device = torch.device(f"cuda:{pipe.transformer_gpu}")
         decoder_device = torch.device(f"cuda:{pipe.decoder_gpu}")
 
@@ -994,11 +1073,8 @@ def run_generation(pipe, config: Config) -> tuple[dict, str]:
 
     # Single-pipeline strategies (bf16_single / auto_offload).
     kwargs["prompt"] = config.prompt
-    if config.reference_images:
-        from diffusers.modular_pipelines.minimax_h3.references import MiniMaxH3ImageReference
-        kwargs["references"] = [
-            MiniMaxH3ImageReference.from_file(path) for path in config.reference_images
-        ]
+    if config.has_references:
+        kwargs["references"] = _build_references(config)
         mode = "ref2va"
     elif config.image is not None:
         from diffusers.utils.loading_utils import load_image
@@ -1022,6 +1098,7 @@ def save_output(
     if not filename.lower().endswith(".mp4"):
         filename += ".mp4"
     out_path = config.output_dir / filename
+    _progress("stage", name="saving")
     encode_video(
         results["videos"][0],
         fps=FPS,
@@ -1035,11 +1112,13 @@ def save_output(
     run_log = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "run_id": config.run_id,
         "parameters": {
             "prompt": config.prompt,
             "prompt_file": config.prompt_file,
             "image": config.image,
             "reference_images": config.reference_images,
+            "reference_videos": config.reference_videos,
             "requested_frames": (
                 config.num_frames
                 if requested_num_frames is None
@@ -1053,6 +1132,12 @@ def save_output(
             "steps": config.steps,
             "seed": config.seed,
             "strategy": config.strategy,
+            "reference_short_edge": config.reference_short_edge,
+            "cp_world_size": (
+                int(os.environ.get("WORLD_SIZE", "1"))
+                if config.strategy == "context_parallel"
+                else None
+            ),
             "device": config.device,
             "transformer_gpu": config.transformer_gpu,
             "conditioner_gpu": config.conditioner_gpu,
@@ -1074,6 +1159,7 @@ def save_output(
         encoding="utf-8",
     )
     print(f"[MiniMax-H3] Run log → {log_path.resolve()}")
+    _progress("saved", path=str(out_path.resolve()), log=str(log_path.resolve()))
     return out_path
 
 
@@ -1098,6 +1184,12 @@ def parse_args() -> Config:
              "images. Not combined with --image.",
     )
     parser.add_argument(
+        "--reference-video", dest="reference_videos", action="append", metavar="PATH",
+        help="Motion/camera reference video (with its soundtrack) → REF2VA mode. "
+             "Repeat for up to 3 videos. Combine with --reference-image; not "
+             "combined with --image. Needs PyAV (pip install av).",
+    )
+    parser.add_argument(
         "--reference-short-edge", dest="reference_short_edge", type=int,
         default=defaults.reference_short_edge, metavar="PX",
         help="ref2va only: short edge (px) each reference image is encoded at "
@@ -1120,9 +1212,22 @@ def parse_args() -> Config:
         "--output", dest="output_filename", default=defaults.output_filename,
         help="Output MP4 filename inside the output folder",
     )
+    parser.add_argument(
+        "--no-auto-download", dest="no_auto_download", action="store_true",
+        help="Fail instead of downloading a missing transformer_ref partition.",
+    )
+    parser.add_argument(
+        "--run-id", dest="run_id", default=None,
+        help="Caller-supplied identifier recorded in the JSON run log.",
+    )
+    parser.add_argument(
+        "--progress-jsonl", dest="progress_jsonl", default=None, metavar="PATH",
+        help="Append machine-readable progress events (JSON Lines) to PATH.",
+    )
     args = parser.parse_args()
 
     reference_images = args.reference_images or []
+    reference_videos = args.reference_videos or []
 
     # A UTF-8 prompt file bypasses shell/code-page corruption of non-ASCII text
     # (e.g. CJK) that can otherwise inflate the token count and blow up memory.
@@ -1135,6 +1240,7 @@ def parse_args() -> Config:
         prompt_file=args.prompt_file,
         image=args.image,
         reference_images=reference_images,
+        reference_videos=reference_videos,
         reference_short_edge=args.reference_short_edge,
         num_frames=args.frames,
         height=args.height,
@@ -1144,36 +1250,49 @@ def parse_args() -> Config:
         strategy=args.strategy,
         output_dir=Path(args.output_dir),
         output_filename=args.output_filename,
+        no_auto_download=args.no_auto_download,
+        run_id=args.run_id,
+        progress_jsonl=args.progress_jsonl,
     )
 
 
-# Reference images run on the single-pipeline strategies or the multi-GPU splits.
+# Reference media run on the single-pipeline strategies or the multi-GPU splits.
 _REF2VA_STRATEGIES = ("auto_offload", "bf16_single", "max_gpu", "context_parallel")
 _MAX_REFERENCE_IMAGES = 9
+_MAX_REFERENCE_VIDEOS = 3
 
 
 def _validate_config(config: Config) -> None:
     """Validate cross-field constraints, raising ``SystemExit`` on misuse."""
-    if not config.reference_images:
+    if not config.has_references:
         return
     if config.image is not None:
         raise SystemExit(
-            "[MiniMax-H3] --reference-image (ref2va) and --image (fl2va) are "
-            "different modes; pass only one."
+            "[MiniMax-H3] --reference-image/--reference-video (ref2va) and "
+            "--image (fl2va) are different modes; pass only one."
         )
     if len(config.reference_images) > _MAX_REFERENCE_IMAGES:
         raise SystemExit(
             f"[MiniMax-H3] At most {_MAX_REFERENCE_IMAGES} reference images are "
             f"supported; got {len(config.reference_images)}."
         )
-    missing = [p for p in config.reference_images if not Path(p).is_file()]
+    if len(config.reference_videos) > _MAX_REFERENCE_VIDEOS:
+        raise SystemExit(
+            f"[MiniMax-H3] At most {_MAX_REFERENCE_VIDEOS} reference videos are "
+            f"supported; got {len(config.reference_videos)}."
+        )
+    missing = [
+        p
+        for p in (*config.reference_images, *config.reference_videos)
+        if not Path(p).is_file()
+    ]
     if missing:
         raise SystemExit(
-            "[MiniMax-H3] Reference image(s) not found: " + ", ".join(missing)
+            "[MiniMax-H3] Reference media not found: " + ", ".join(missing)
         )
     if config.strategy not in _REF2VA_STRATEGIES:
         raise SystemExit(
-            f"[MiniMax-H3] Reference images need --strategy "
+            f"[MiniMax-H3] References need --strategy "
             f"{' or '.join(_REF2VA_STRATEGIES)} (got '{config.strategy}')."
         )
     if config.reference_short_edge is not None and config.reference_short_edge < 64:
@@ -1187,6 +1306,7 @@ def main() -> None:
     run_started = time.perf_counter()
     config = parse_args()
     _validate_config(config)
+    _enable_progress(config.progress_jsonl)
 
     requested_num_frames = config.num_frames
     snapped = snap_num_frames(config.num_frames)
@@ -1197,7 +1317,12 @@ def main() -> None:
         )
         config.num_frames = snapped
 
-    if config.reference_images:
+    if config.has_references:
+        if config.no_auto_download and not _reference_partition_complete():
+            raise SystemExit(
+                "[MiniMax-H3] transformer_ref partition is missing or incomplete and "
+                "--no-auto-download was given; run download_transformer_ref.py first."
+            )
         _ensure_reference_partition()
 
     # Context parallel runs one worker process per GPU; each worker owns the
@@ -1209,12 +1334,15 @@ def main() -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[MiniMax-H3] Loading model with strategy='{config.strategy}' …")
+    _progress("stage", name="loading")
     pipe = build_pipeline(config)
 
+    _progress("stage", name="generating", steps=config.steps)
     results, mode = run_generation(pipe, config)
     save_output(results, config, mode, requested_num_frames)
     total_minutes = (time.perf_counter() - run_started) / 60
     print(f"[MiniMax-H3] Total generation time: {total_minutes:.2f} mins")
+    _progress("done", minutes=round(total_minutes, 2))
 
 
 if __name__ == "__main__":

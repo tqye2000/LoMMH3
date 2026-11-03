@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+.pytest_cache/
+
+# NiceGUI local storage (when the app runs from the repo)
+.nicegui/
+
+# Generated media and extracted frames (already-tracked examples stay tracked)
+*.mp4
+*.mov
+*.webm
+*.wav
+*_first.png
+*_last.png
+*_last.jpg
+
+# Reference images in working folders; add examples deliberately with `git add -f`
+images/*
+project_*/**/*.jpg
+project_*/**/*.jpeg
+project_*/**/*.png
+project_*/**/*.webp
+
+# Editor / OS
+.DS_Store
+Thumbs.db

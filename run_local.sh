@@ -8,7 +8,7 @@
 # invocation, not torchrun.
 #
 # Usage (from Windows PowerShell):
-#   wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/run_local_cp.sh
+#   wsl -d Ubuntu -- bash /mnt/.../run_local_cp.sh
 # Extra flags are forwarded to LoMMH.py, e.g.:
 #   wsl -d Ubuntu -- bash /mnt/.../run_local_cp.sh --steps 40
 # ---------------------------------------------------------------------------
