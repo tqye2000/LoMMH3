@@ -47,6 +47,7 @@ def main() -> int:
                  "--reference-short-edge"):
         parser.add_argument(flag)
     parser.add_argument("--reference-image", action="append", default=[])
+    parser.add_argument("--lora", action="append", default=[])
     parser.add_argument("--no-auto-download", action="store_true")
     args = parser.parse_args()
     mode = os.environ.get("FAKE_GEN_MODE", "ok")

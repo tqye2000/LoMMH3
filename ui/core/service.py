@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import secrets
 import shutil
+import struct
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +13,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from . import constants as C
-from .generation import build_request, effective_params, validate_step
+from .generation import build_request, effective_params, is_lora_name, validate_step
 from .images import ingest_image
 from .models import (
     Export, ExportInput, GenerateStep, GenParams, ImageAsset, ImageBinding, Job, Project, PromptRevision, new_id,
@@ -28,6 +31,23 @@ class ServiceError(ValueError):
     def __init__(self, errors: list[str] | str) -> None:
         self.errors = [errors] if isinstance(errors, str) else errors
         super().__init__("; ".join(self.errors))
+
+
+_MAX_SAFETENSORS_HEADER = 100 * 1024 * 1024
+
+
+def _check_lora_file(path: Path) -> None:
+    """Reject anything that is not a safetensors file holding LoRA tensors."""
+    try:
+        with path.open("rb") as handle:
+            (length,) = struct.unpack("<Q", handle.read(8))
+            if not 0 < length <= _MAX_SAFETENSORS_HEADER:
+                raise ValueError
+            header = json.loads(handle.read(length))
+    except (OSError, ValueError, struct.error):
+        raise ServiceError("Not a valid safetensors file.") from None
+    if not isinstance(header, dict) or not any("lora" in key.lower() for key in header if key != "__metadata__"):
+        raise ServiceError("The file holds no LoRA weights.")
 
 
 class Service:
@@ -77,6 +97,34 @@ class Service:
         project.defaults = GenParams.model_validate({**project.defaults.model_dump(), **values})
         self.store.save_project(project)
         self.store.append_activity(project_id, "project.defaults", "Project defaults updated")
+
+    # -- LoRA library ----------------------------------------------------
+    def list_loras(self) -> list[str]:
+        folder = self.settings.lora_path
+        if not folder.is_dir():
+            return []
+        return sorted(p.name for p in folder.iterdir() if p.is_file() and is_lora_name(p.name))
+
+    def lora_upload_temp(self) -> Path:
+        """A hidden path in the library to stream an upload into before :meth:`register_lora`."""
+        folder = self.settings.lora_path
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / f".upload-{secrets.token_hex(8)}"
+
+    def register_lora(self, temp: Path, filename: str) -> str:
+        """Validate an uploaded file as a LoRA safetensors file and move it into the library."""
+        try:
+            name = Path(filename.replace("\\", "/")).name.strip()
+            if not is_lora_name(name):
+                raise ServiceError(f"LoRA files must be named *{C.LORA_SUFFIX}: {filename!r}")
+            target = self.settings.lora_path / name
+            if target.exists():
+                raise ServiceError(f"A LoRA named {name} is already in the library.")
+            _check_lora_file(temp)
+            temp.rename(target)
+            return name
+        finally:
+            temp.unlink(missing_ok=True)
 
     # -- image pool ------------------------------------------------------
     def prepare_image(self, project_id: str, filename: str, data: bytes) -> ImageAsset:
@@ -232,7 +280,7 @@ class Service:
     def validate_step(self, project_id: str, step_id: str) -> list[str]:
         project = self.get_project(project_id)
         step = project.step(step_id)
-        return validate_step(project, step, self.get_prompt(project_id, step_id))
+        return validate_step(project, step, self.get_prompt(project_id, step_id), self.settings.lora_path)
 
     def check_draft(self, project_id: str, step_id: str, prompt: str, params: dict[str, Any]) -> list[str]:
         """Validate unsaved editor values without persisting them."""
@@ -243,14 +291,14 @@ class Service:
         except ValidationError as exc:
             return [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()]
         step.overrides = merged.model_dump()
-        return validate_step(project, step, prompt)
+        return validate_step(project, step, prompt, self.settings.lora_path)
 
     # -- jobs ------------------------------------------------------------
     def run_step(self, project_id: str, step_id: str) -> Job:
         project = self.get_project(project_id)
         step = project.step(step_id)
         prompt = self.store.read_prompt(project_id, step_id, step.prompt_revision)
-        errors = validate_step(project, step, prompt)
+        errors = validate_step(project, step, prompt, self.settings.lora_path)
         if errors:
             raise ServiceError(errors)
         job = Job(

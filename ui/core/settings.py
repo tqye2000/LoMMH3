@@ -26,6 +26,7 @@ class Settings(BaseModel):
     generator_python: Path = Path.home() / "minimax-venv" / "bin" / "python"
     generator_script: Path = REPO_ROOT / "LoMMH.py"
     hf_home: Path = Path(_default_hf_home())
+    lora_dir: Path | None = None  # default: <data_root>/loras
     host: str = "127.0.0.1"
     port: int = 8080
     allowed_hosts: list[str] = ["127.0.0.1", "localhost"]
@@ -36,9 +37,14 @@ class Settings(BaseModel):
     poll_interval_s: float = 1.0
     cancel_grace_s: float = 20.0
 
+    @property
+    def lora_path(self) -> Path:
+        return self.lora_dir or self.data_root / "loras"
+
 
 _ENV_MAP = {
     "MINIMAX_UI_DATA": "data_root",
+    "MINIMAX_UI_LORA_DIR": "lora_dir",
     "MINIMAX_GEN_PYTHON": "generator_python",
     "MINIMAX_GEN_SCRIPT": "generator_script",
     "MINIMAX_UI_HOST": "host",

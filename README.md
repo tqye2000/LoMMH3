@@ -11,13 +11,14 @@ Generation is offline after the required model files are present. The script rew
 - Subject/style reference-image generation (`ref2va`) with one or more `--reference-image` arguments
 - Motion/camera reference-video generation (`ref2va`) with one or more `--reference-video` arguments
 - Int8 quantisation and CPU/group offloading for smaller GPUs
+- Optional LoRA adapters (`--lora PATH[:SCALE]`, stackable) on every strategy, including the int8 ones
 - Explicit multi-GPU placement for the `max_gpu` strategy (needs ~64 GB/GPU; see note below)
 - Context-parallel single-clip acceleration across GPUs with the `context_parallel` strategy (requires WSL2 or Linux — needs NCCL, which the Windows PyTorch wheels don't include)
 - MP4 output with the model-generated audio track, plus a JSON run log per clip
 - UTF-8 prompt files for prompts containing Chinese or other non-ASCII text
 - Machine-readable progress events (`--progress-jsonl`) for front ends
 - Joining clips end-to-end with synchronized audio (`join_videos_with_audio.py`)
-- **MiniMax Studio**, a local web UI for multi-step projects, reference-image pools, a durable generation queue, takes, last-frame chaining, and video export
+- **MiniMax Studio**, a local web UI for multi-step projects, reference-image pools, a shared LoRA library, a durable generation queue, takes, last-frame chaining, and video export
 
 ## Files
 
@@ -44,10 +45,10 @@ Use the virtual environment in this workspace. Diffusers from the main branch is
 
 ```powershell
 & '.venv\Scripts\python.exe' -m pip install -U git+https://github.com/huggingface/diffusers.git
-& '.venv\Scripts\python.exe' -m pip install -U transformers accelerate torchao av pillow
+& '.venv\Scripts\python.exe' -m pip install -U transformers accelerate torchao av pillow peft
 ```
 
-The environment must also have a compatible CUDA-enabled PyTorch installation for GPU generation.
+The environment must also have a compatible CUDA-enabled PyTorch installation for GPU generation. `peft` is only needed for `--lora`.
 
 ## Model cache
 
@@ -150,6 +151,28 @@ Check the local partition without downloading:
 
 Interrupted downloads can be resumed by running the same command again. If the Hub requests authentication, authenticate with Hugging Face before starting the download.
 
+## LoRA adapters
+
+`--lora PATH[:SCALE]` loads a local LoRA (a `.safetensors` file or a folder) into the denoising transformer at `SCALE` (default `1.0`). Repeat the option to stack adapters, each with its own scale. It works with every strategy; adapters are loaded before group offloading or context parallelism is applied. Requires `peft` in the GPU venv (`wsl_setup.sh` installs it).
+
+```bash
+~/minimax-venv/bin/python LoMMH.py \
+  --strategy context_parallel \
+  --prompt-file project_3/prompt_1.txt \
+  --lora ~/loras/lineart_anime.safetensors:0.8 \
+  --lora ~/loras/turbo.safetensors \
+  --output styled.mp4
+```
+
+Windows paths such as `D:\loras\style.safetensors:0.7` are parsed correctly; only a numeric suffix after the last `:` is taken as the scale.
+
+Notes:
+
+- Diffusers converts the common MiniMax-H3 LoRA layouts (Diffusers/PEFT dumps, DiffSynth-Studio, and original-checkpoint key names). LoRAs trained against a *pruned* checkpoint fail with a size mismatch.
+- With the int8 strategies the adapter runs unfused on top of the quantised weights (PEFT's torchao LoRA layer); it cannot be merged into them. fp32 LoRA factors are cast to bf16 after loading.
+- In `ref2va` the adapter goes into `transformer_ref`. Published LoRAs target `transformer`, so results in reference mode may differ from what the LoRA was trained for.
+- The adapters and scales are recorded under `loras` in the JSON run log.
+
 ## Running the generator
 
 From the workspace root:
@@ -219,10 +242,17 @@ wsl -d Ubuntu -- bash /mnt/d/TQYE/Experiments/MiniMax/ui/run_ui.sh   # equivalen
 - **Projects and steps:** each project holds an ordered list of steps with
   project-wide default parameters. A step has a mode (`t2va`, `fl2va`, `ref2va`),
   a UTF-8 prompt, generation parameters (frames, size, steps, seed, strategy,
-  reference short edge), and validation before queueing.
+  reference short edge, LoRAs), and validation before queueing.
 - **Image pool:** upload reference images to the project (validated and stored
   immutably with thumbnails), then pick them into a step's slots. `ref2va` steps
   have up to 4 ordered slots (the model allows 9); `fl2va` uses one first-frame slot.
+- **LoRA library:** the LoRAs tab uploads `*.safetensors` LoRAs (up to 8 GB;
+  rejected unless the file is a valid safetensors file containing LoRA weights)
+  into a library shared by all projects. Files copied into the library folder
+  directly appear after pressing refresh. Under Parameters (per step) or in
+  Project defaults, **Add LoRA** picks up to 4 library LoRAs, each with a scale
+  from -2 to 2; they are passed to `LoMMH.py` as `--lora`. Missing files,
+  duplicates, and out-of-range scales are reported before queueing.
 - **Takes:** every generation creates a take with video preview, first/last
   frames, and run log. Select, delete, or reuse a take's seed; add its first or
   last frame to the pool; or **Use in next step** to chain the last frame into
@@ -249,6 +279,7 @@ Settings come from `<data-root>/settings.json`, overridden by environment variab
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MINIMAX_UI_DATA` | `~/minimax-ui-data` | Project data root |
+| `MINIMAX_UI_LORA_DIR` | `<data-root>/loras` | LoRA library folder (`lora_dir` in `settings.json`) |
 | `MINIMAX_UI_HOST` / `MINIMAX_UI_PORT` | `127.0.0.1` / `8080` | Bind address and port |
 | `MINIMAX_UI_ALLOWED_HOSTS` | `127.0.0.1,localhost` | Accepted `Host` headers |
 | `MINIMAX_GEN_PYTHON` | `~/minimax-venv/bin/python` | GPU venv interpreter |
@@ -322,6 +353,7 @@ and clips without audio contribute silence.
 | `--no-auto-download` | off | Fail instead of downloading a missing `transformer_ref` partition. |
 | `--run-id ID` | — | Identifier recorded in the JSON run log. |
 | `--progress-jsonl PATH` | — | Append machine-readable progress events (stages, denoise steps, completion) to `PATH`. |
+| `--lora PATH[:SCALE]` | — | Apply a local LoRA to the denoiser at `SCALE` (default 1.0); repeat to stack. Needs `peft`. See [LoRA adapters](#lora-adapters). |
 
 Run `--help` for the full argument descriptions and defaults:
 
@@ -453,6 +485,8 @@ Each output is an MP4 containing the generated video and audio. A JSON run log w
 - **Prompt appears corrupted or uses unexpectedly high memory:** put non-ASCII text in a UTF-8 file and pass it with `--prompt-file`.
 - **OOM during "Encoding prompt" with reference images:** lower `--reference-short-edge` or switch to `auto_offload` (see `run_ref2va_offload.sh`).
 - **`context_parallel` fails with "Distributed package doesn't have NCCL built in":** run it under WSL2/Linux, not native Windows.
+- **`--lora` fails with a size mismatch:** the LoRA was trained against a pruned checkpoint and does not fit the full MiniMax-H3 model.
+- **`--lora needs PEFT`:** install it in the GPU venv (`~/minimax-venv/bin/pip install peft`).
 - **Slow generation:** reduce `--steps` and resolution, or use `context_parallel` across several GPUs (WSL2/Linux).
 
 ## Credits

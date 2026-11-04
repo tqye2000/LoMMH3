@@ -46,6 +46,12 @@ STRATEGY_LABELS = {
 MIN_CP_WORLD_SIZE = 2
 MAX_CP_WORLD_SIZE = 8
 
+MAX_LORAS = 4
+MIN_LORA_SCALE = -2.0
+MAX_LORA_SCALE = 2.0
+LORA_SUFFIX = ".safetensors"
+MAX_LORA_UPLOAD_BYTES = 8 * 1024**3
+
 
 def snap_frames(requested: int) -> int:
     """Round up to the nearest valid ``17*n+5`` frame count, clamped to the range."""
