@@ -151,15 +151,15 @@ def param_form(
             if not lora_rows:
                 ui.label("None" if available else "None (the LoRA library is empty)").classes(
                     "text-caption text-grey")
+            unused = [n for n in available if n not in {r["name"] for r in lora_rows}]
             for row in lora_rows:
                 with ui.row().classes("w-full items-center no-wrap gap-2"):
-                    ui.select(sorted({*available, row["name"]}), label="LoRA").bind_value(row, "name") \
-                        .classes("col")
+                    ui.select(sorted({*unused, row["name"]}), label="LoRA", value=row["name"],
+                              on_change=lambda e, r=row: select_lora(r, e.value)).classes("col")
                     ui.number("Scale", min=C.MIN_LORA_SCALE, max=C.MAX_LORA_SCALE, step=0.05) \
                         .bind_value(row, "scale").classes("w-24")
                     ui.button(icon="delete", on_click=lambda r=row: remove_lora(r)).props(
                         "flat dense round").tooltip("Remove LoRA")
-            unused = [n for n in available if n not in {r["name"] for r in lora_rows}]
             add = ui.button("Add LoRA", icon="add", on_click=lambda: add_lora(unused[0])).props(
                 "flat dense no-caps")
             add.set_enabled(bool(unused) and len(lora_rows) < C.MAX_LORAS)
@@ -167,6 +167,11 @@ def param_form(
     def add_lora(name: str) -> None:
         lora_rows.append({"name": name, "scale": 1.0})
         draw_loras()
+
+    def select_lora(row: dict[str, Any], name: str) -> None:
+        if row["name"] != name:
+            row["name"] = name
+            draw_loras()
 
     def remove_lora(row: dict[str, Any]) -> None:
         lora_rows[:] = [r for r in lora_rows if r is not row]
