@@ -29,6 +29,11 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LoraChoice(_Model):
+    name: str  # file name inside the LoRA library folder
+    scale: float = 1.0
+
+
 class GenParams(_Model):
     width: int = 1056
     height: int = 576
@@ -38,6 +43,7 @@ class GenParams(_Model):
     strategy: str = "context_parallel"
     cp_world_size: int = 4
     reference_short_edge: int | None = 1536
+    loras: list[LoraChoice] = Field(default_factory=list)
 
 
 class ImageAsset(_Model):

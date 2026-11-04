@@ -6,6 +6,7 @@ git+https://github.com/huggingface/diffusers.git
 
 transformers
 accelerate
+peft
 torchao
 av
 Pillow

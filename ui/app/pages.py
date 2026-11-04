@@ -79,7 +79,9 @@ def job_rows(jobs: list[Job], *, show_project: bool, on_log: Callable[[Job], Non
             else:
                 ui.label(job.step_name).classes("w-40 ellipsis")
             p = job.request.params
-            ui.label(f"{p.width}x{p.height} {p.frames}f {p.steps} steps seed {p.seed}").classes("text-caption w-64")
+            loras = f" +{len(p.loras)} LoRA" if p.loras else ""
+            ui.label(f"{p.width}x{p.height} {p.frames}f {p.steps} steps seed {p.seed}{loras}").classes(
+                "text-caption w-64")
             ui.label(_elapsed(job)).classes("text-caption w-16")
             if job.state == "running" and job.progress.step and job.progress.steps:
                 ui.linear_progress(job.progress.step / job.progress.steps, show_value=False).classes("w-32")
@@ -116,8 +118,10 @@ def version_timer(callback: Callable[[], None], interval: float = 1.0) -> None:
     ui.timer(interval, check)
 
 
-def param_form(params: GenParams, mode: str) -> Callable[[], dict[str, Any]]:
-    """Render generation-parameter inputs; returns a getter for their values."""
+def param_form(
+    params: GenParams, mode: str, lora_names: Callable[[], list[str]]
+) -> tuple[Callable[[], dict[str, Any]], Callable[[], None]]:
+    """Render generation-parameter inputs; returns (values getter, LoRA-options redraw)."""
     frame_options = {n: f"{n} ({n / C.FPS:.1f} s)" for n in C.valid_frame_counts()}
     with ui.grid(columns=4).classes("w-full gap-2"):
         width = ui.number("Width", value=params.width, min=C.MIN_DIM, max=C.MAX_DIM,
@@ -136,6 +140,40 @@ def param_form(params: GenParams, mode: str) -> Callable[[], dict[str, Any]]:
                              format="%d")
         ref_edge.set_visibility(mode in ("ref2va", "any"))
 
+    lora_rows: list[dict[str, Any]] = [lora.model_dump() for lora in params.loras]
+    ui.label("LoRAs").classes("text-caption text-weight-medium")
+    lora_box = ui.column().classes("w-full gap-1")
+
+    def draw_loras() -> None:
+        available = lora_names()
+        lora_box.clear()
+        with lora_box:
+            if not lora_rows:
+                ui.label("None" if available else "None (the LoRA library is empty)").classes(
+                    "text-caption text-grey")
+            for row in lora_rows:
+                with ui.row().classes("w-full items-center no-wrap gap-2"):
+                    ui.select(sorted({*available, row["name"]}), label="LoRA").bind_value(row, "name") \
+                        .classes("col")
+                    ui.number("Scale", min=C.MIN_LORA_SCALE, max=C.MAX_LORA_SCALE, step=0.05) \
+                        .bind_value(row, "scale").classes("w-24")
+                    ui.button(icon="delete", on_click=lambda r=row: remove_lora(r)).props(
+                        "flat dense round").tooltip("Remove LoRA")
+            unused = [n for n in available if n not in {r["name"] for r in lora_rows}]
+            add = ui.button("Add LoRA", icon="add", on_click=lambda: add_lora(unused[0])).props(
+                "flat dense no-caps")
+            add.set_enabled(bool(unused) and len(lora_rows) < C.MAX_LORAS)
+
+    def add_lora(name: str) -> None:
+        lora_rows.append({"name": name, "scale": 1.0})
+        draw_loras()
+
+    def remove_lora(row: dict[str, Any]) -> None:
+        lora_rows[:] = [r for r in lora_rows if r is not row]
+        draw_loras()
+
+    draw_loras()
+
     def values() -> dict[str, Any]:
         def as_int(value: Any) -> Any:
             return int(value) if isinstance(value, (int, float)) else value
@@ -146,8 +184,9 @@ def param_form(params: GenParams, mode: str) -> Callable[[], dict[str, Any]]:
             "seed": "random" if seed_text in ("", "random") else (int(seed_text) if seed_text.isdigit() else seed_text),
             "strategy": strategy.value, "cp_world_size": as_int(gpus.value),
             "reference_short_edge": as_int(ref_edge.value),
+            "loras": [dict(row) for row in lora_rows],
         }
-    return values
+    return values, draw_loras
 
 
 def install() -> None:
@@ -249,6 +288,7 @@ class ProjectWorkspace:
         self.view_export: str | None = None
         self._export_steps_sig: tuple = ()
         self._export_history_sig: tuple = ()
+        self._redraw_loras: Callable[[], None] | None = None
 
     @property
     def project(self) -> Project:
@@ -288,6 +328,7 @@ class ProjectWorkspace:
                         takes_tab = ui.tab("Takes", icon="movie")
                         pool_tab = ui.tab("Image pool", icon="photo_library")
                         exports_tab = ui.tab("Exports", icon="video_library")
+                        lora_tab = ui.tab("LoRAs", icon="auto_fix_high")
                     with ui.tab_panels(tabs, value=takes_tab).classes("w-full"):
                         with ui.tab_panel(takes_tab):
                             self.takes()
@@ -295,6 +336,8 @@ class ProjectWorkspace:
                             self.pool_panel()
                         with ui.tab_panel(exports_tab):
                             self.exports_panel()
+                        with ui.tab_panel(lora_tab):
+                            self.lora_panel()
 
         ui.separator()
         with ui.tabs().classes("w-full") as bottom_tabs:
@@ -351,6 +394,7 @@ class ProjectWorkspace:
     # -- editor ----------------------------------------------------------
     @ui.refreshable_method
     def editor(self) -> None:
+        self._redraw_loras = None
         step = self.step()
         if step is None:
             ui.label("Select or add a step.").classes("text-grey")
@@ -379,7 +423,8 @@ class ProjectWorkspace:
         ui.label("Parameters").classes("text-subtitle2 q-mt-sm")
         overridden = ", ".join(sorted(step.overrides)) or "none (using project defaults)"
         ui.label(f"Overrides: {overridden}").classes("text-caption text-grey")
-        get_params = param_form(self.service.step_params(self.pid, step.id), step.mode)
+        get_params, self._redraw_loras = param_form(
+            self.service.step_params(self.pid, step.id), step.mode, self.service.list_loras)
         with ui.row():
             ui.button("Apply parameters", icon="check", on_click=lambda: self.apply_params(get_params())).props(
                 "outline")
@@ -600,6 +645,50 @@ class ProjectWorkspace:
             return
         self.select_step(target.id)
         ui.notify(f"Last frame set as image 1 of '{target.name}'")
+
+    # -- LoRA library ----------------------------------------------------
+    def lora_panel(self) -> None:
+        async def handle_upload(event) -> None:
+            temp = self.service.lora_upload_temp()
+            try:
+                await event.file.save(temp)
+                name = await run.io_bound(self.service.register_lora, temp, event.file.name)
+            except (ServiceError, OSError) as exc:
+                _notify_error(exc)
+                return
+            finally:
+                temp.unlink(missing_ok=True)
+            ui.notify(f"Added LoRA {name}", type="positive")
+            self.refresh_loras()
+
+        ui.label("LoRAs are shared by all projects. Pick them per step under Parameters, "
+                 "or in Project defaults.").classes("text-caption text-grey")
+        ui.upload(label=f"Add LoRA (*{C.LORA_SUFFIX})", multiple=True, auto_upload=True,
+                  max_file_size=C.MAX_LORA_UPLOAD_BYTES, on_upload=handle_upload,
+                  on_rejected=lambda: ui.notify("File rejected (too large?)", type="warning")) \
+            .props(f"accept='{C.LORA_SUFFIX}'").classes("w-full")
+        self.lora_list()
+
+    def refresh_loras(self) -> None:
+        self.lora_list.refresh()
+        if self._redraw_loras is not None:
+            self._redraw_loras()
+
+    @ui.refreshable_method
+    def lora_list(self) -> None:
+        folder = self.service.settings.lora_path
+        names = self.service.list_loras()
+        with ui.row().classes("w-full items-center"):
+            ui.label(f"{len(names)} LoRA(s) in {folder}").classes("text-caption text-grey col") \
+                .style("word-break: break-all")
+            ui.button(icon="refresh", on_click=self.refresh_loras).props("flat dense round").tooltip(
+                "Rescan the folder (for files copied in directly)")
+        for name in names:
+            size_mb = (folder / name).stat().st_size / 1024**2
+            with ui.row().classes("w-full items-center no-wrap"):
+                ui.icon("auto_fix_high")
+                ui.label(name).classes("col ellipsis")
+                ui.label(f"{size_mb:,.0f} MB").classes("text-caption text-grey")
 
     # -- image pool ------------------------------------------------------
     def pool_panel(self) -> None:
@@ -826,7 +915,7 @@ class ProjectWorkspace:
         with ui.dialog() as dialog, ui.card().classes("w-[760px] max-w-full"):
             ui.label("Project defaults").classes("text-h6")
             ui.label("Steps use these unless they override a value.").classes("text-caption text-grey")
-            get_values = param_form(self.project.defaults, "any")
+            get_values, _redraw = param_form(self.project.defaults, "any", self.service.list_loras)
 
             def save() -> None:
                 try:

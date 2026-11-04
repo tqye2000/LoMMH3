@@ -56,6 +56,7 @@ pip install \
     "torchao==0.18.0" \
     "transformers==5.16.1" \
     "accelerate==1.14.0" \
+    "peft==0.21.2" \
     "safetensors==0.8.0" \
     "tokenizers==0.23.1" \
     "numpy==2.5.1" \

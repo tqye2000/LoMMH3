@@ -127,6 +127,57 @@ def test_unicode_prompt_round_trips(service: Service) -> None:
     assert not service.save_prompt(project.id, step.id, prompt)
 
 
+def _safetensors(keys: list[str]) -> bytes:
+    import json
+    import struct
+
+    header = json.dumps({k: {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]} for k in keys}).encode()
+    return struct.pack("<Q", len(header)) + header + b"\0\0"
+
+
+def _upload_lora(service: Service, name: str, data: bytes) -> str:
+    temp = service.lora_upload_temp()
+    temp.write_bytes(data)
+    return service.register_lora(temp, name)
+
+
+def test_lora_library_rejects_bad_files(service: Service) -> None:
+    good = _safetensors(["transformer.blocks.0.attn.to_q.lora_A.weight"])
+    assert _upload_lora(service, "../style.safetensors", good) == "style.safetensors"
+    assert service.list_loras() == ["style.safetensors"]
+    for name, data, message in [
+        ("style.safetensors", good, "already in the library"),
+        ("model.ckpt", good, "must be named"),
+        ("junk.safetensors", b"not a safetensors file", "Not a valid"),
+        ("base.safetensors", _safetensors(["blocks.0.weight"]), "no LoRA weights"),
+    ]:
+        with pytest.raises(ServiceError, match=message):
+            _upload_lora(service, name, data)
+    assert service.list_loras() == ["style.safetensors"]
+    assert not [p for p in service.settings.lora_path.iterdir() if p.name.startswith(".")]
+
+
+def test_lora_choices_are_validated_and_passed(service: Service, tmp_path: Path) -> None:
+    _upload_lora(service, "style.safetensors", _safetensors(["transformer.x.lora_B.weight"]))
+    project = service.create_project("LoRA")
+    step = service.add_step(project.id)
+    service.save_prompt(project.id, step.id, "Ink-wash mountains.")
+
+    service.update_step(project.id, step.id, params={"loras": [{"name": "gone.safetensors", "scale": 3}]})
+    errors = " ".join(service.validate_step(project.id, step.id))
+    assert "not found" in errors and "between" in errors
+
+    service.update_step(project.id, step.id, params={"loras": [{"name": "style.safetensors", "scale": 0.7}]})
+    job = service.run_step(project.id, step.id)
+    cmd = build_command(service.settings, job, service.store.project_dir(project.id), tmp_path / "j", tmp_path / "t")
+    assert cmd[cmd.index("--lora") + 1] == f"{service.settings.lora_path / 'style.safetensors'}:0.7"
+
+    service.update_step(project.id, step.id, params={"loras": []})
+    job = service.run_step(project.id, step.id)
+    cmd = build_command(service.settings, job, service.store.project_dir(project.id), tmp_path / "j", tmp_path / "t")
+    assert "--lora" not in cmd
+
+
 def test_env_strips_secrets(service: Service, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("SOME_SERVICE_TOKEN", "x")

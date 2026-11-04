@@ -15,6 +15,7 @@ Quick start
     python LoMMH.py --reference-image subject.png   # subject reference (REF2VA)
     python LoMMH.py --reference-video motion.mp4     # motion/camera reference (REF2VA)
     python LoMMH.py --strategy auto_offload   # 24-32 GB VRAM
+    python LoMMH.py --lora style.safetensors:0.8     # apply a LoRA (repeatable)
     python LoMMH.py --help                # all options
 
 Hardware notes
@@ -235,6 +236,7 @@ class Config:
     no_auto_download: bool = False    # fail instead of downloading transformer_ref
     run_id: str | None = None         # caller-supplied ID recorded in the run log
     progress_jsonl: str | None = None  # append machine-readable progress events here
+    loras: list[tuple[str, float]] = field(default_factory=list)  # (path, scale) adapters
     # "max_gpu" only: each big model lives whole on its own GPU.
     transformer_gpu: int = 0
     conditioner_gpu: int = 1
@@ -347,6 +349,31 @@ def _load_int8_text_encoder(device_map: dict | None = None):
         ),
         device_map=device_map,
     )
+
+
+def _apply_loras(pipe, config: Config) -> None:
+    """Load ``config.loras`` into the denoiser ``pipe`` holds; no-op without LoRAs.
+
+    Must run before group offloading / context parallelism wrap the denoiser.
+    The pipeline routes ``transformer.``-prefixed LoRAs into ``transformer_ref``
+    on its own when that is the only partition it holds (ref2va).
+    """
+    if not config.loras:
+        return
+    names = []
+    for index, (path, scale) in enumerate(config.loras):
+        name = f"lora_{index}"
+        if _is_main_process():
+            print(f"[MiniMax-H3]   LoRA {name} <- {path} (scale {scale})")
+        pipe.load_lora_weights(path, adapter_name=name)
+        names.append(name)
+    pipe.set_adapters(names, adapter_weights=[scale for _, scale in config.loras])
+
+    denoiser = pipe.transformer_ref if config.has_references else pipe.transformer
+    # Some LoRA files ship fp32 factors; keep the adapter in the model's bf16 budget.
+    for param_name, param in denoiser.named_parameters():
+        if "lora_" in param_name and param.dtype != torch.bfloat16:
+            param.data = param.data.to(torch.bfloat16)
 
 
 def move_conditioning_state(state, device: torch.device):
@@ -552,6 +579,7 @@ def _build_max_gpu(config: Config):
     generator_pipe = workflow.init_pipeline(MODEL_INDEX)
     generator_pipe.update_components(transformer=transformer)
     generator_pipe.load_components(dtype=torch.bfloat16)
+    _apply_loras(generator_pipe, config)
 
     # Stages 3 & 4: video / audio decoding (decoder GPU).
     video_decoder = video_decode_block.init_pipeline(MODEL_INDEX)
@@ -638,6 +666,7 @@ def _build_max_gpu_ref2va(config: Config) -> "_Ref2VASplit":
     denoiser = _stage(lambda name: name.startswith("denoise"))
     denoiser.update_components(transformer_ref=transformer_ref)
     denoiser.load_components(dtype=torch.bfloat16)
+    _apply_loras(denoiser, config)
 
     # Stage 4: video + audio decoding (same VAEs, reused on the decoder GPU).
     decoder = _stage(lambda name: name.startswith("decode"))
@@ -671,6 +700,7 @@ def _build_bf16_single(config: Config):
     pipe = ModularPipeline.from_pretrained(MODEL_INDEX, components_manager=manager)
     _apply_reference_short_edge(pipe, config)
     pipe.load_components(workflow=_workflow_for(config), dtype=torch.bfloat16)
+    _apply_loras(pipe, config)
     return pipe
 
 
@@ -689,6 +719,7 @@ def _build_multi_gpu(config: Config):
     manager.enable_auto_cpu_offload(device="cuda:0")
     pipe = workflow.init_pipeline(MODEL_INDEX, components_manager=manager)
     pipe.load_components(dtype=torch.bfloat16)
+    _apply_loras(pipe, config)
     return conditioner, pipe   # caller must chain manually
 
 
@@ -710,6 +741,7 @@ def _build_auto_offload(config: Config):
             text_encoder=_load_int8_text_encoder(),
         )
     pipe.load_components(workflow=_workflow_for(config), dtype=torch.bfloat16)
+    _apply_loras(pipe, config)
 
     # The denoiser partition ref2va reads is ``transformer_ref``; fl2va/t2va read
     # ``transformer``. Stream whichever one this workflow loaded.
@@ -962,6 +994,7 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
     else:
         denoiser.update_components(transformer=transformer)
     denoiser.load_components(dtype=torch.bfloat16)
+    _apply_loras(denoiser, config)
     _enable_context_parallel(transformer, plan.world_size)
 
     state = move_conditioning_state(state, device)
@@ -1133,6 +1166,7 @@ def save_output(
             "seed": config.seed,
             "strategy": config.strategy,
             "reference_short_edge": config.reference_short_edge,
+            "loras": [{"path": path, "scale": scale} for path, scale in config.loras],
             "cp_world_size": (
                 int(os.environ.get("WORLD_SIZE", "1"))
                 if config.strategy == "context_parallel"
@@ -1224,6 +1258,11 @@ def parse_args() -> Config:
         "--progress-jsonl", dest="progress_jsonl", default=None, metavar="PATH",
         help="Append machine-readable progress events (JSON Lines) to PATH.",
     )
+    parser.add_argument(
+        "--lora", dest="loras", action="append", type=_parse_lora, metavar="PATH[:SCALE]",
+        help="Apply a local LoRA (.safetensors file or folder) to the denoiser at "
+             "SCALE (default 1.0). Repeat to stack adapters. Needs `pip install peft`.",
+    )
     args = parser.parse_args()
 
     reference_images = args.reference_images or []
@@ -1253,7 +1292,19 @@ def parse_args() -> Config:
         no_auto_download=args.no_auto_download,
         run_id=args.run_id,
         progress_jsonl=args.progress_jsonl,
+        loras=args.loras or [],
     )
+
+
+def _parse_lora(value: str) -> tuple[str, float]:
+    """Split ``PATH[:SCALE]``; a non-numeric tail (e.g. a drive letter) stays in the path."""
+    path, sep, tail = value.rpartition(":")
+    if sep:
+        try:
+            return path, float(tail)
+        except ValueError:
+            pass
+    return value, 1.0
 
 
 # Reference media run on the single-pipeline strategies or the multi-GPU splits.
@@ -1264,6 +1315,14 @@ _MAX_REFERENCE_VIDEOS = 3
 
 def _validate_config(config: Config) -> None:
     """Validate cross-field constraints, raising ``SystemExit`` on misuse."""
+    if config.loras:
+        missing_loras = [path for path, _ in config.loras if not Path(path).exists()]
+        if missing_loras:
+            raise SystemExit("[MiniMax-H3] LoRA not found: " + ", ".join(missing_loras))
+        try:
+            import peft  # noqa: F401
+        except ImportError:
+            raise SystemExit("[MiniMax-H3] --lora needs PEFT: pip install peft") from None
     if not config.has_references:
         return
     if config.image is not None:

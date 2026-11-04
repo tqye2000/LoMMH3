@@ -14,6 +14,14 @@ from .settings import Settings
 _SECRET_ENV = re.compile(r"(OPENAI|API_KEY|_KEY$|TOKEN|SECRET|PASSWORD)", re.IGNORECASE)
 
 
+def is_lora_name(name: str) -> bool:
+    """A plain ``*.safetensors`` file name; no directories or hidden files."""
+    return (
+        name == Path(name).name and "\\" not in name and not name.startswith(".")
+        and name.endswith(C.LORA_SUFFIX) and len(name) > len(C.LORA_SUFFIX)
+    )
+
+
 def effective_params(project: Project, step: GenerateStep) -> GenParams:
     data = project.defaults.model_dump()
     data.update(step.overrides)
@@ -53,7 +61,27 @@ def validate_params(params: GenParams, mode: str) -> list[str]:
             f"Reference short edge must be between {C.MIN_REFERENCE_SHORT_EDGE} "
             f"and {C.MAX_REFERENCE_SHORT_EDGE}."
         )
+    if len(params.loras) > C.MAX_LORAS:
+        errors.append(f"At most {C.MAX_LORAS} LoRAs are allowed.")
+    names = [lora.name for lora in params.loras]
+    if len(set(names)) != len(names):
+        errors.append("Each LoRA can be used only once.")
+    for lora in params.loras:
+        if not is_lora_name(lora.name):
+            errors.append(f"Invalid LoRA file name: {lora.name!r}.")
+        if not C.MIN_LORA_SCALE <= lora.scale <= C.MAX_LORA_SCALE:
+            errors.append(
+                f"LoRA scale for {lora.name} must be between {C.MIN_LORA_SCALE} and {C.MAX_LORA_SCALE}."
+            )
     return errors
+
+
+def missing_loras(params: GenParams, lora_dir: Path) -> list[str]:
+    return [
+        f"LoRA not found in the library: {lora.name}."
+        for lora in params.loras
+        if is_lora_name(lora.name) and not (lora_dir / lora.name).is_file()
+    ]
 
 
 def selected_images(project: Project, step: GenerateStep) -> list[ResolvedImage]:
@@ -66,7 +94,9 @@ def selected_images(project: Project, step: GenerateStep) -> list[ResolvedImage]
     return resolved
 
 
-def validate_step(project: Project, step: GenerateStep, prompt_text: str) -> list[str]:
+def validate_step(
+    project: Project, step: GenerateStep, prompt_text: str, lora_dir: Path | None = None
+) -> list[str]:
     errors = []
     if not prompt_text.strip():
         errors.append("The prompt is empty; save a prompt first.")
@@ -83,6 +113,8 @@ def validate_step(project: Project, step: GenerateStep, prompt_text: str) -> lis
     if step.mode == "ref2va" and not images:
         errors.append(f"Reference mode needs 1 to {C.IMAGE_SLOTS} enabled images.")
     errors += validate_params(effective_params(project, step), step.mode)
+    if lora_dir is not None:
+        errors += missing_loras(effective_params(project, step), lora_dir)
     return errors
 
 
@@ -127,6 +159,8 @@ def build_command(
             cmd += ["--reference-image", str(project_dir / image.path)]
         if p.reference_short_edge is not None:
             cmd += ["--reference-short-edge", str(p.reference_short_edge)]
+    for lora in p.loras:
+        cmd += ["--lora", f"{settings.lora_path / lora.name}:{lora.scale}"]
     return cmd
 
 
