@@ -8,6 +8,7 @@ from typing import Any, Callable
 from nicegui import run, ui
 
 from ui.core import constants as C
+from ui.core import prompt_ai
 from ui.core.generation import validate_params
 from ui.core.images import ImageRejected
 from ui.core.models import Export, GenerateStep, GenParams, Job, Project
@@ -418,6 +419,7 @@ class ProjectWorkspace:
         self.prompt_input = prompt
         with ui.row().classes("items-center"):
             ui.button("Save prompt", icon="save", on_click=self.save_prompt).props("outline")
+            ui.button("AI Edit", icon="auto_awesome", on_click=self.ai_edit_dialog).props("outline")
             dirty = ui.label("").classes("text-caption text-orange")
             prompt.on_value_change(lambda e: dirty.set_text(
                 "Unsaved changes" if e.value != self.service.get_prompt(self.pid, step.id) else ""))
@@ -460,6 +462,40 @@ class ProjectWorkspace:
         ui.notify("Prompt saved" if changed else "No changes to save")
         self.editor.refresh()
         return changed
+
+    def ai_edit_dialog(self) -> None:
+        """Revise the prompt box text with an OpenAI model; the result stays unsaved for review."""
+        with ui.dialog() as dialog, ui.card().classes("w-[36rem]"):
+            settings = self.service.settings
+            ui.label("AI Edit prompt").classes("text-h6")
+            ui.label(f"Model: {settings.openai_model}").classes("text-caption text-grey")
+            instruction = ui.textarea("Extra instructions (optional)",
+                                      placeholder="e.g. make it more cinematic, add rain sounds") \
+                .props("outlined autogrow").classes("w-full")
+            with ui.row().classes("w-full justify-end items-center"):
+                spinner = ui.spinner().props("size=sm")
+                spinner.set_visibility(False)
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                go = ui.button("Revise", icon="auto_awesome").props("unelevated color=primary")
+
+            async def revise() -> None:
+                api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else ""
+                go.disable()
+                spinner.set_visibility(True)
+                try:
+                    text = await run.io_bound(prompt_ai.revise_prompt, self.prompt_input.value or "",
+                                              api_key, settings.openai_model, instruction.value or "")
+                except prompt_ai.PromptAIError as exc:
+                    _notify_error(exc)
+                    return
+                finally:
+                    go.enable()
+                    spinner.set_visibility(False)
+                self.prompt_input.set_value(text)
+                dialog.close()
+                ui.notify("Prompt revised - review and save it", type="positive")
+            go.on_click(revise)
+        dialog.open()
 
     def apply_params(self, values: dict[str, Any]) -> None:
         try:

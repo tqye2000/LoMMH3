@@ -286,6 +286,14 @@ Settings come from `<data-root>/settings.json`, overridden by environment variab
 | `MINIMAX_GEN_SCRIPT` | `<repo>/LoMMH.py` | Generator script |
 | `HF_HOME` | `~/hf_models` if staged, else `/mnt/d/hf_models` | Model cache root |
 | `MINIMAX_UI_GPU_CHECK` / `MINIMAX_UI_MODEL_CHECK` | enabled | Set to `0` to skip the GPU or model preflight check |
+| `OPENAI_API_KEY` | unset | Key for the prompt **AI Edit** button (`openai_api_key` in `settings.json`) |
+| `MINIMAX_UI_OPENAI_MODEL` | `gpt-5` | Model for **AI Edit** (`openai_model` in `settings.json`) |
+
+Example `settings.json` (keep it private, e.g. `chmod 600`):
+
+```json
+{"openai_api_key": "sk-...", "openai_model": "gpt-5"}
+```
 
 The login link changes on every start and the app binds to localhost only.
 Secrets such as `OPENAI_API_KEY` are stripped from the generator's environment.

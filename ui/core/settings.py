@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _STAGED_CACHE = Path.home() / "hf_models" / "hub" / "models--MiniMaxAI--MiniMax-H3"
@@ -36,6 +36,8 @@ class Settings(BaseModel):
     model_check: bool = True
     poll_interval_s: float = 1.0
     cancel_grace_s: float = 20.0
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-5"
 
     @property
     def lora_path(self) -> Path:
@@ -49,6 +51,8 @@ _ENV_MAP = {
     "MINIMAX_GEN_SCRIPT": "generator_script",
     "MINIMAX_UI_HOST": "host",
     "MINIMAX_UI_PORT": "port",
+    "OPENAI_API_KEY": "openai_api_key",
+    "MINIMAX_UI_OPENAI_MODEL": "openai_model",
 }
 
 
