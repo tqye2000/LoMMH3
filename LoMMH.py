@@ -224,6 +224,7 @@ class Config:
     reference_images: list[str] = field(default_factory=list)  # subject refs → REF2VA
     reference_videos: list[str] = field(default_factory=list)  # motion/camera refs → REF2VA
     reference_short_edge: int | None = None  # ref2va: override encode short edge (default 2048)
+    reference_video_short_edge: int | None = None  # ref2va: override video-ref short edge (default 768)
     num_frames: int = MAX_FRAMES      # 24 fps; snapped to 17*n+5 in [124, 345]
     height: int = 544                 # multiple of 32
     width: int = 960                  # multiple of 32; 960×544 ≈ 2.3× faster than 1344×768
@@ -686,11 +687,15 @@ def _apply_reference_short_edge(pipe, config: Config) -> None:
     at the price of reference fidelity. Read at call time off ``pipe.config``, so
     setting it on any pipeline that carries the ``before_encode`` block is enough.
     """
-    if config.reference_short_edge is None:
-        return
-    pipe.register_to_config(reference_image_short_edge=config.reference_short_edge)
-    if _is_main_process():
-        print(f"[MiniMax-H3] reference_image_short_edge -> {config.reference_short_edge}px")
+    if config.reference_short_edge is not None:
+        pipe.register_to_config(reference_image_short_edge=config.reference_short_edge)
+        if _is_main_process():
+            print(f"[MiniMax-H3] reference_image_short_edge -> {config.reference_short_edge}px")
+    if config.reference_video_short_edge is not None:
+        # Explicit --width/--height are always passed, so this only resizes reference videos.
+        pipe.register_to_config(canvas_short_edge=config.reference_video_short_edge)
+        if _is_main_process():
+            print(f"[MiniMax-H3] reference video short edge -> {config.reference_video_short_edge}px")
 
 
 def _build_bf16_single(config: Config):
@@ -1166,6 +1171,7 @@ def save_output(
             "seed": config.seed,
             "strategy": config.strategy,
             "reference_short_edge": config.reference_short_edge,
+            "reference_video_short_edge": config.reference_video_short_edge,
             "loras": [{"path": path, "scale": scale} for path, scale in config.loras],
             "cp_world_size": (
                 int(os.environ.get("WORLD_SIZE", "1"))
@@ -1231,6 +1237,13 @@ def parse_args() -> Config:
              "memory of large references at the cost of reference fidelity.",
     )
     parser.add_argument(
+        "--reference-video-short-edge", dest="reference_video_short_edge", type=int,
+        default=defaults.reference_video_short_edge, metavar="PX",
+        help="ref2va only: short edge (px) each reference video is resized to "
+             "(default 768, regardless of --width/--height). Lower it (e.g. 384) "
+             "to cut conditioner and denoise memory.",
+    )
+    parser.add_argument(
         "--frames", type=int, default=defaults.num_frames,
         help=f"Frame count @ {FPS}fps; snapped to 17*n+5 in [{MIN_FRAMES}, {MAX_FRAMES}]",
     )
@@ -1281,6 +1294,7 @@ def parse_args() -> Config:
         reference_images=reference_images,
         reference_videos=reference_videos,
         reference_short_edge=args.reference_short_edge,
+        reference_video_short_edge=args.reference_video_short_edge,
         num_frames=args.frames,
         height=args.height,
         width=args.width,
@@ -1358,6 +1372,11 @@ def _validate_config(config: Config) -> None:
         raise SystemExit(
             "[MiniMax-H3] --reference-short-edge must be a positive size of at "
             f"least 64 px (got {config.reference_short_edge})."
+        )
+    if config.reference_video_short_edge is not None and config.reference_video_short_edge < 64:
+        raise SystemExit(
+            "[MiniMax-H3] --reference-video-short-edge must be at least 64 px "
+            f"(got {config.reference_video_short_edge})."
         )
 
 

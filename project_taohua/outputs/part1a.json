@@ -1,0 +1,42 @@
+{
+  "timestamp_utc": "2026-10-07T05:24:02.413768+00:00",
+  "mode": "ref2va",
+  "parameters": {
+    "prompt": "A majestic red fox trotting through a snow-covered pine forest at golden hour, soft light filtering through the trees, cinematic wide shot",
+    "prompt_file": null,
+    "image": null,
+    "reference_images": [
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_2.jpg"
+    ],
+    "reference_videos": [],
+    "requested_frames": 345,
+    "frames": 345,
+    "fps": 24,
+    "duration_seconds": 14.375,
+    "height": 544,
+    "width": 960,
+    "steps": 30,
+    "seed": 42,
+    "strategy": "context_parallel",
+    "device": "cuda",
+    "transformer_gpu": 0,
+    "conditioner_gpu": 1,
+    "decoder_gpu": 2,
+    "output_dir": "outputs",
+    "output_filename": "minimax_h3_ref2va.mp4",
+    "output_path": "/mnt/d/TQYE/Experiments/MiniMax/outputs/minimax_h3_ref2va.mp4"
+  },
+  "command_line": [
+    "/usr/bin/python3.12",
+    "--strategy",
+    "context_parallel",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_2.jpg"
+  ],
+  "runtime": {
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "torch": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cuda_device_count": 4
+  }
+}

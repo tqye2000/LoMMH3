@@ -1,0 +1,57 @@
+{
+  "timestamp_utc": "2026-09-04T08:58:37.818726+00:00",
+  "mode": "ref2va",
+  "parameters": {
+    "prompt": "使用图片1作为本段视频首帧，并作为马良唯一人物身份参考。保持马良的脸型、五官、发型、年龄感、服装和整体气质一致。马良约12岁，瘦削清秀，黑发简单束起，穿破旧灰蓝粗布上衣、深色旧布裤、旧布鞋，是中国古代贫苦农村少年形象。\n\n生成一段14.5秒、写实电影感的中国古代民间传奇短片。背景是中国古代江南贫困小村，有土墙、木门、旧窗、石板路、晾衣绳、木桶、柴草、茅屋、远山。不要出现任何现代元素。\n\n0-4秒：黄昏，马良蹲在土墙边，用烧黑的木炭认真画一只鸟。镜头缓慢推进，夕阳温暖，马良神情专注安静。\n4-7秒：马良停下来看着墙上的鸟画，眼里有满足，也有对真正毛笔的渴望。他轻轻抬头望向远处，又回头看画。旁白：“从前，有个穷孩子叫马良。家里买不起笔，可他一天也没有停止画画。”\n7-10秒：夜晚，简陋茅屋内，马良坐在破旧木桌前继续作画。桌上只有木炭和画稿，没有毛笔。油灯昏黄，月光透窗而入。\n10-12秒：马良太疲倦，伏在桌上睡着了，手边还放着木炭和画稿。镜头缓慢推近，气氛安静朴素。\n12-14.5秒：屋内悄悄出现一丝柔和淡金色光芒，像奇迹即将来临，但不要出现完整仙人。最后定格：马良伏在桌上熟睡，脸部清晰可见，桌上有画稿，窗边有淡淡金光，便于下一段衔接。\n\n风格要求：\n写实电影感，真实人物动作，自然光影，情绪温暖又带清贫感，黄昏暖金色过渡到夜晚烛光与月光，神秘金光柔和克制，不要卡通化。\n\n环境音：傍晚虫鸣、村庄远处人声、夜晚微风、轻微木屋声、油灯燃烧声。",
+    "prompt_file": "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\ml_prompt1.txt",
+    "image": null,
+    "reference_images": [
+      "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\ml1.jpg"
+    ],
+    "requested_frames": 345,
+    "frames": 345,
+    "fps": 24,
+    "duration_seconds": 14.375,
+    "height": 384,
+    "width": 704,
+    "steps": 35,
+    "seed": 22,
+    "strategy": "auto_offload",
+    "device": "cuda",
+    "transformer_gpu": 0,
+    "conditioner_gpu": 1,
+    "decoder_gpu": 2,
+    "output_dir": "project_ml\\outputs",
+    "output_filename": "ml_part1b.mp4",
+    "output_path": "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\outputs\\ml_part1b.mp4"
+  },
+  "command_line": [
+    "D:\\TQYE\\Experiments\\MiniMax\\.venv\\Scripts\\python.exe",
+    "--strategy",
+    "auto_offload",
+    "--reference-image",
+    "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\ml1.jpg",
+    "--prompt-file",
+    "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\ml_prompt1.txt",
+    "--frames",
+    "345",
+    "--width",
+    "704",
+    "--height",
+    "384",
+    "--steps",
+    "35",
+    "--seed",
+    "22",
+    "--output-dir",
+    ".\\project_ml\\outputs",
+    "--output",
+    "ml_part1b.mp4"
+  ],
+  "runtime": {
+    "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+    "torch": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cuda_device_count": 4
+  }
+}

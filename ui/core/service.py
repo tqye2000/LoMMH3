@@ -233,6 +233,17 @@ class Service:
         step = self.get_project(project_id).step(step_id)
         return self.store.read_prompt(project_id, step_id, step.prompt_revision)
 
+    def previous_prompts(self, project_id: str, step_id: str) -> list[tuple[str, str]]:
+        """(name, saved prompt) of the non-empty steps before `step_id`, in project order."""
+        result = []
+        for step in self.get_project(project_id).steps:
+            if step.id == step_id:
+                break
+            text = self.store.read_prompt(project_id, step.id, step.prompt_revision)
+            if text.strip():
+                result.append((step.name, text))
+        return result
+
     def save_prompt(self, project_id: str, step_id: str, text: str, origin: str = "manual") -> bool:
         """Save a new prompt revision if the text changed; returns whether it did."""
         project = self.get_project(project_id)

@@ -472,6 +472,11 @@ class ProjectWorkspace:
             instruction = ui.textarea("Extra instructions (optional)",
                                       placeholder="e.g. make it more cinematic, add rain sounds") \
                 .props("outlined autogrow").classes("w-full")
+            previous = self.service.previous_prompts(self.pid, self.step_id)
+            use_previous = ui.checkbox(f"Use previous scenes as context ({len(previous)})",
+                                       value=bool(previous))
+            if not previous:
+                use_previous.disable()
             with ui.row().classes("w-full justify-end items-center"):
                 spinner = ui.spinner().props("size=sm")
                 spinner.set_visibility(False)
@@ -484,7 +489,8 @@ class ProjectWorkspace:
                 spinner.set_visibility(True)
                 try:
                     text = await run.io_bound(prompt_ai.revise_prompt, self.prompt_input.value or "",
-                                              api_key, settings.openai_model, instruction.value or "")
+                                              api_key, settings.openai_model, instruction.value or "",
+                                              previous if use_previous.value else ())
                 except prompt_ai.PromptAIError as exc:
                     _notify_error(exc)
                     return

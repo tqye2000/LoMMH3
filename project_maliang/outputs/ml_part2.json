@@ -1,0 +1,53 @@
+{
+  "timestamp_utc": "2026-09-03T18:54:20.360600+00:00",
+  "mode": "fl2va",
+  "parameters": {
+    "prompt": "使用图片1作为本段首帧，并将其中的少年马良作为唯一人物身份参考。保持他的脸型、五官、发型、年龄、服装和整体气质完全一致。\n\n生成14.5秒写实电影感的中国古代民间传奇短片。延续上一部风格。场景为简陋古代茅屋和屋外小院，无任何现代元素。魔法效果采用柔和淡金色光芒，真实克制，不要卡通化。\n\n0-4秒：\n从图片1开始。夜深，马良伏在木桌上熟睡，手边散着画稿。月光照进屋内，一团柔和金光渐渐亮起，一位白发白须、慈祥神秘的老仙人从光中出现。镜头缓慢推进。\n旁白，温暖沉稳男声：“这天夜里，马良做了一个神奇的梦……”\n\n4-8秒：\n老仙人微笑走到马良身边，拿出一支古朴、泛着淡金光的毛笔。马良在梦中惊醒般抬起头，惊讶地看着仙人，并伸手接过神笔。\n老仙人温和地说：“马良，这支神笔送给你，用它帮助穷苦的人吧。”\n\n8-11秒：\n仙人和金光慢慢消失。马良突然醒来，低头发现自己手里竟然真的握着那支神笔。他睁大眼睛，既惊讶又激动，轻声说：“神笔……是真的？”\n\n11-14.5秒：\n清晨，马良来到屋外，用神笔在纸上或土墙上画出一只小鸟。最后一笔落下，鸟的墨线泛起淡淡金光，瞬间化成真实的小鸟，振翅飞向天空。马良惊喜地抬头追看。\n\n旁白：“神笔画出的东西，竟真的活了！”\n\n最后定格：\n马良站在晨光中，手里清楚握着神笔，惊喜地望着飞起的小鸟。人物脸部清晰，神笔清晰，为下一段直接衔接。\n写实电影质感，中国古代江南民间传奇氛围，自然人物动作，温暖光影，镜头平稳流畅。",
+    "prompt_file": "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\ml_prompt2.txt",
+    "image": "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\outputs\\ml_part1_last.jpg",
+    "reference_images": [],
+    "requested_frames": 345,
+    "frames": 345,
+    "fps": 24,
+    "duration_seconds": 14.375,
+    "height": 384,
+    "width": 704,
+    "steps": 35,
+    "seed": 22,
+    "strategy": "auto_offload",
+    "device": "cuda",
+    "transformer_gpu": 0,
+    "conditioner_gpu": 1,
+    "decoder_gpu": 2,
+    "output_dir": "outputs",
+    "output_filename": "ml_part2.mp4",
+    "output_path": "D:\\TQYE\\Experiments\\MiniMax\\outputs\\ml_part2.mp4"
+  },
+  "command_line": [
+    "D:\\TQYE\\Experiments\\MiniMax\\.venv\\Scripts\\python.exe",
+    "--strategy",
+    "auto_offload",
+    "--prompt-file",
+    "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\ml_prompt2.txt",
+    "--image",
+    "D:\\TQYE\\Experiments\\MiniMax\\project_ml\\outputs\\ml_part1_last.jpg",
+    "--frames",
+    "345",
+    "--width",
+    "704",
+    "--height",
+    "384",
+    "--steps",
+    "35",
+    "--seed",
+    "22",
+    "--output",
+    "ml_part2.mp4"
+  ],
+  "runtime": {
+    "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+    "torch": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cuda_device_count": 4
+  }
+}

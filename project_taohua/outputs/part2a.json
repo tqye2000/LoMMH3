@@ -1,0 +1,63 @@
+{
+  "timestamp_utc": "2026-10-07T14:58:25.340618+00:00",
+  "mode": "ref2va",
+  "parameters": {
+    "prompt": "生成一段 14.5秒写实古风电影感短片。\n提供的图片1是男主角唯一身份参考，必须保持男主面部身份、五官比例、发型、年龄感和整体气质高度一致。\n提供的图片2是场景构图参考，本段开场应尽量从该参考图的画面状态开始：春日桃花盛开，旧院墙、灰瓦、半开的木门，门内院中可隐约看见一些器物与庭院陈设。\n男主是一位年轻书生，气质温和儒雅，带一点旅途风尘，情绪略带期待。\n他骑着一匹古朴的马，缓缓来到小院门前。\n\n0–3秒:\n画面从参考图中的院门场景开始。\n镜头先静静停留在那座春日小院：桃花繁盛，木门半开，门内院落若隐若现，阳光温暖柔和，花瓣偶尔飘落。\n整体构图尽量贴近参考图，先不要出现人物，营造“旧地依旧”的感觉。\n\n3–6秒:\n远处传来轻微马蹄声。\n男主骑着马从画面一侧缓缓进入场景，速度很慢，不张扬。\n镜头保持电影感的中远景，让观众先看到“人归故地”的状态：\n他坐在马上，目光望向那半开的木门，神情安静，带一点迟疑与回忆。\n\n6–9秒:\n男主继续骑马慢慢靠近院门，在门前不远处停下。\n马匹自然减速，轻轻停步。\n男主坐在马上，望着那扇半开的门，一时没有立刻下马。\n春风吹动他的发带、衣角，也吹动桃枝和飘落的花瓣。\n这一段重点表现他“故地重来”的情绪停顿。\n\n可加轻声旁白：\n“去年别后，今日重来。”\n\n9–12秒:\n镜头稍微推进。\n男主在马上凝视那扇门，目光从桃花移到门内院中隐约可见的陈设，像是在寻找旧日的身影。\n他的神情从平静慢慢变得复杂：有期待，也有一点不安。\n不要夸张表演，只用细微眼神和呼吸变化来表现。\n可加旁白：\n“桃花依旧……”\n\n12–14.5秒:\n男主轻轻拉住缰绳，让马更稳地停在门前。\n他微微前倾，仍坐在马上，静静望向半开的门内。\n镜头停留在一个适合作为下一段开场的稳定画面：\n前景/中景是骑马停驻的男主，背景是桃花掩映下的半开木门，门内院落隐约可见。\n如果需要旁白收束，可用：\n“只是，不知故人可还在此门中。”\n\n视觉风格:\n- 写实古风\n- 电影感\n- 暖色春日阳光\n- 浅景深\n- 柔和自然光\n- 镜头运动缓慢、克制、优雅\n- 情绪含蓄，不夸张，不煽情\n- 强调“旧地重访、物是人非未明”的感觉\n\n声音设计:\n- 轻柔古琴\n- 微风吹拂桃枝\n- 细微鸟鸣\n- 轻缓马蹄声、马匹停步声\n- 偶尔有花瓣飘落的细微环境声\n- 整体音效安静，留白感强",
+    "prompt_file": "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt2.txt",
+    "image": null,
+    "reference_images": [
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/male.jpg",
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/reference.jpg"
+    ],
+    "reference_videos": [],
+    "requested_frames": 345,
+    "frames": 345,
+    "fps": 24,
+    "duration_seconds": 14.375,
+    "height": 384,
+    "width": 704,
+    "steps": 40,
+    "seed": 42,
+    "strategy": "context_parallel",
+    "device": "cuda",
+    "transformer_gpu": 0,
+    "conditioner_gpu": 1,
+    "decoder_gpu": 2,
+    "output_dir": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "output_filename": "part2a.mp4",
+    "output_path": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part2a.mp4"
+  },
+  "command_line": [
+    "/usr/bin/python3.12",
+    "--strategy",
+    "context_parallel",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/male.jpg",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/reference.jpg",
+    "--prompt-file",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt2.txt",
+    "--frames",
+    "345",
+    "--width",
+    "704",
+    "--height",
+    "384",
+    "--steps",
+    "40",
+    "--seed",
+    "42",
+    "--reference-short-edge",
+    "1536",
+    "--output-dir",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "--output",
+    "part2a.mp4"
+  ],
+  "runtime": {
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "torch": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cuda_device_count": 4
+  }
+}
