@@ -1,0 +1,63 @@
+{
+  "timestamp_utc": "2026-10-07T23:13:54.730018+00:00",
+  "mode": "ref2va",
+  "parameters": {
+    "prompt": "生成一段 14.5秒写实古风电影感短片。\n提供的图片1是男主角唯一身份参考。\n提供的图片2是庭院、院门与桃花场景参考。\n保持男主面部身份、五官比例、发型、年龄感、服装风格与前几集高度一致。\n保持院落、石桌、旧陶碗、半开的木门、桃树、春日光线与上一集连续一致。\n本集是整个故事的结尾。\n重点表现：人已不在，桃花依旧，男主终于明白这场相逢只能留在记忆中。\n\n0–3秒:\n承接上一集的图片2\n男主独自站在安静的院中。\n他低头看了一眼石桌上的旧陶碗，然后慢慢抬头，看向院门外盛开的桃花。\n春风吹过。\n粉色花瓣不断从枝头飘落。\n男主没有说话。\n神情平静，却带着明显的失落与怀念。\n\n3–5秒:\n男主缓缓走出院门。\n来到那棵去年曾与女子相见的桃树下。\n他停下脚步。\n抬头望向满树桃花。\n镜头从男主侧面缓慢推近。\n阳光穿过桃枝落在他的脸上。\n\n5–14.5秒｜男主朗诵全诗\n男主站在桃树下，望着飘落的花瓣，以平静、低沉、略带怀念的声音朗诵：\n“去年今日此门中，\n人面桃花相映红。\n人面不知何处去，\n桃花依旧笑春风。”\n\n朗诵过程中不要让男主一直正对镜头。\n镜头随着诗句自然变化：\n“去年今日此门中”\n短暂闪现去年女子站在木门旁的温暖记忆画面。\n“人面桃花相映红”\n短暂闪现女子站在桃树下浅笑的画面，桃花映在她脸旁。\n“人面不知何处去”\n画面回到现实。\n同样的院门、同样的位置，却已经空无一人。\n“桃花依旧笑春风”\n镜头慢慢离开男主，转向盛开的桃树。\n最后2秒的视觉重点\n男主朗读到：\n“桃花依旧笑春风。”\n镜头缓缓拉远。\n男主独自站在桃树下。\n春风吹起他的衣袖。\n漫天桃花缓缓落下。\n随后男主转身，沿着来时的小路慢慢远去。\n镜头不跟随男主。\n继续停留在那扇半开的旧木门和盛开的桃树上。\n男主越来越远，最终离开画面。\n最后只剩：\n空院、旧门、春风、桃花。\n画面缓慢淡出。\n结尾字幕\n最后画面可淡入小字：\n《题都城南庄》\n崔护\n随后淡出至黑。\n视觉风格\n写实古风、电影质感、暖色春光中带淡淡清冷感。\n浅景深、柔和逆光、真实桃花飘落。\n不要哭泣，不要夸张痛苦。\n男主的情绪应是遗憾、怀念、接受，而不是强烈悲伤。\n“去年”的回忆镜头比现实略暖、略柔；“今日”的现实稍微降低饱和度，形成时间和情绪上的区别。\n声音设计\n前半段只有很轻的古琴、春风与鸟鸣。\n男主开始朗诗后，古琴进一步降低，让声音清晰、自然。\n朗读最后一句：\n“桃花依旧笑春风。”\n琴声缓缓拉长。\n男主离开画面后，不再有人声。\n只留下几秒春风吹过桃花树的声音，随后随画面一起淡出。",
+    "prompt_file": "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt2d.txt",
+    "image": null,
+    "reference_images": [
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_3.jpg",
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part2c_n_last.jpg"
+    ],
+    "reference_videos": [],
+    "requested_frames": 345,
+    "frames": 345,
+    "fps": 24,
+    "duration_seconds": 14.375,
+    "height": 576,
+    "width": 1056,
+    "steps": 40,
+    "seed": 42,
+    "strategy": "context_parallel",
+    "device": "cuda",
+    "transformer_gpu": 0,
+    "conditioner_gpu": 1,
+    "decoder_gpu": 2,
+    "output_dir": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "output_filename": "part2d.mp4",
+    "output_path": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part2d.mp4"
+  },
+  "command_line": [
+    "/usr/bin/python3.12",
+    "--strategy",
+    "context_parallel",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_3.jpg",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part2c_n_last.jpg",
+    "--prompt-file",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt2d.txt",
+    "--frames",
+    "345",
+    "--width",
+    "1056",
+    "--height",
+    "576",
+    "--steps",
+    "40",
+    "--seed",
+    "42",
+    "--reference-short-edge",
+    "1536",
+    "--output-dir",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "--output",
+    "part2d.mp4"
+  ],
+  "runtime": {
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "torch": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cuda_device_count": 4
+  }
+}

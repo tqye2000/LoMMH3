@@ -1,0 +1,63 @@
+{
+  "timestamp_utc": "2026-10-07T16:25:08.407162+00:00",
+  "mode": "ref2va",
+  "parameters": {
+    "prompt": "生成一段 14.5秒写实古风电影感短片。\n承接上一集最后一帧。\n提供的图片1是男主角唯一身份参考。\n提供的图片2是庭院与桃花场景参考。\n\n保持男主面部身份、五官比例、发型、年龄感和服装风格高度一致。\n保持院墙、木门、桃树、石板路、石桌、陶罐等环境与上一集连续一致。\n男主已经走入院中，开始寻找去年见过的少女。\n\n0–3秒:\n男主站在院中，轻声唤：\n“姑娘？”\n声音在安静的小院里轻轻回荡。\n无人回应。\n镜头缓慢环绕男主半圈。\n他先看向左侧厢房，再看向右侧屋门。\n只有春风吹动桃枝。\n\n3–6秒:\n男主向前走几步。\n他看见去年两人相见附近的石桌。\n镜头切到石桌近景：\n桌面上落着几片桃花，旁边放着一个旧陶碗。\n男主停住脚步。\n他认出了那个碗。\n神情明显一怔。\n\n6–9秒:\n男主缓缓走到石桌旁。\n他伸手轻轻碰了一下陶碗边缘。\n手指停在那里几秒。\n镜头推近他的侧脸。\n他的眼神从期待逐渐转为失落。\n不要流泪，不要夸张悲伤。\n\n9–12秒:\n男主抬头望向院中。\n镜头从他的视角扫过：\n空着的屋门、安静的石凳、无人走动的小院。\n去年女子站过的位置，如今只有桃花在风中摇曳。\n一片花瓣落在男主掌中。\n\n12–14.5秒:\n男主慢慢转身，看向院门外那棵盛开的桃树。\n镜头从他身后缓缓拉远。\n他独自站在空院中央。\n春风吹过，桃花纷纷落下。\n\n旁白轻声：\n“人面不知何处去。”\n\n最后定格：\n男主独自站在空院中，前方桃花依旧盛开，身边却再无故人。\n保持构图稳定，适合作为下一段“桃花依旧笑春风”的开场。\n\n视觉风格:\n写实古风、电影质感、暖色春日阳光，但整体比上一集略显清冷。镜头缓慢、克制，强调“环境没有变，人却不在”的反差。\n\n声音:\n轻柔古琴、春风、鸟鸣。男主说“姑娘？”之后，音乐短暂变轻；看到旧陶碗时只保留风声和极轻琴音。结尾加入少量花瓣飘落声。",
+    "prompt_file": "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt2c.txt",
+    "image": null,
+    "reference_images": [
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_3.jpg",
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part2b_last.jpg"
+    ],
+    "reference_videos": [],
+    "requested_frames": 345,
+    "frames": 345,
+    "fps": 24,
+    "duration_seconds": 14.375,
+    "height": 384,
+    "width": 704,
+    "steps": 40,
+    "seed": 42,
+    "strategy": "context_parallel",
+    "device": "cuda",
+    "transformer_gpu": 0,
+    "conditioner_gpu": 1,
+    "decoder_gpu": 2,
+    "output_dir": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "output_filename": "part2c.mp4",
+    "output_path": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part2c.mp4"
+  },
+  "command_line": [
+    "/usr/bin/python3.12",
+    "--strategy",
+    "context_parallel",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_3.jpg",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part2b_last.jpg",
+    "--prompt-file",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt2c.txt",
+    "--frames",
+    "345",
+    "--width",
+    "704",
+    "--height",
+    "384",
+    "--steps",
+    "40",
+    "--seed",
+    "42",
+    "--reference-short-edge",
+    "1536",
+    "--output-dir",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "--output",
+    "part2c.mp4"
+  ],
+  "runtime": {
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "torch": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cuda_device_count": 4
+  }
+}

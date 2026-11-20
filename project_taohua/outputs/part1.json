@@ -1,0 +1,60 @@
+{
+  "timestamp_utc": "2026-10-07T05:41:56.598240+00:00",
+  "mode": "ref2va",
+  "parameters": {
+    "prompt": "生成一段14.5秒写实古风电影感短片。\n\n提供的图片1是男主角唯一身份参考。保持男主面部身份、五官比例、发型和整体气质高度一致。\n\n男主是一位约16岁的年轻书生，刚刚科举落第，衣着朴素，背着简单书囊，神情略显失落，却仍温和儒雅。\n\n场景为中国古代春日郊外。乡间小路通向一处安静小院，灰瓦院墙，旧木门，门旁盛开一棵桃树。春风轻柔，阳光温暖，粉色桃花偶尔飘落。\n\n**0–4秒：**  \n书生独自沿乡间小路缓缓走来。\n\n镜头从稍远处跟拍。他肩背书囊，脚步有些疲惫，低着头，神情带着科举落第后的失意。\n\n春风吹动他的衣袖和发带。\n\n远处传来鸟鸣。\n\n**4–8秒：**  \n书生经过一枝伸向道路的桃花。\n\n一片花瓣落在他的肩头。\n\n他停下脚步，抬手轻轻取下花瓣，看了一眼，原本失落的神情稍微舒展。\n\n镜头从花瓣特写慢慢移到他的脸。\n\n**8–11秒：**  \n书生抬头。\n\n前方出现一座安静的小院。\n\n旧木门旁，一棵桃树正开得灿烂。\n\n镜头从书生背后拍摄，他站在小路中央，望向远处的桃花小院。\n\n**11–14.5秒：**  \n书生缓缓走到木门前。\n\n他有些口渴，轻轻抿了一下干涩的嘴唇，看向院内。\n\n犹豫片刻后，他抬起手，准备敲门。\n\n最后定格：\n\n书生站在桃花盛开的旧木门前，一只手刚刚抬起，桃花在他身旁轻轻飘落。\n\n此画面构图清晰、稳定，适合作为下一集开场。\n\n**视觉风格：**  \n写实古风电影感，暖色春日自然光，浅景深，柔和逆光，真实自然的人物动作。整体气氛前半段略显落寞，随着桃花小院出现逐渐转暖。不要夸张悲伤，不要快速剪辑。\n\n**声音：**  \n轻柔古琴、春风、鸟鸣、脚步声。前半段音乐略带低沉，看到桃花后逐渐明亮。",
+    "prompt_file": "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt1.txt",
+    "image": null,
+    "reference_images": [
+      "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_2.jpg"
+    ],
+    "reference_videos": [],
+    "requested_frames": 345,
+    "frames": 345,
+    "fps": 24,
+    "duration_seconds": 14.375,
+    "height": 384,
+    "width": 704,
+    "steps": 35,
+    "seed": 22,
+    "strategy": "context_parallel",
+    "device": "cuda",
+    "transformer_gpu": 0,
+    "conditioner_gpu": 1,
+    "decoder_gpu": 2,
+    "output_dir": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "output_filename": "part1.mp4",
+    "output_path": "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs/part1.mp4"
+  },
+  "command_line": [
+    "/usr/bin/python3.12",
+    "--strategy",
+    "context_parallel",
+    "--reference-image",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/male_2.jpg",
+    "--prompt-file",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt1.txt",
+    "--frames",
+    "345",
+    "--width",
+    "704",
+    "--height",
+    "384",
+    "--steps",
+    "35",
+    "--seed",
+    "22",
+    "--reference-short-edge",
+    "1536",
+    "--output-dir",
+    "/mnt/d/TQYE/Experiments/MiniMax/project_4/outputs",
+    "--output",
+    "part1.mp4"
+  ],
+  "runtime": {
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "torch": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cuda_device_count": 4
+  }
+}
