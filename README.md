@@ -93,15 +93,15 @@ Example with two image references:
 ```powershell
 & '.venv\Scripts\python.exe' LoMMH.py `
   --strategy auto_offload `
-  --reference-image images\hl_3.jpg `
-  --reference-image images\chongda_a.jpg `
+  --reference-image images\img_1.jpg `
+  --reference-image images\img_2.jpg `
   --prompt-file prompts\prompt2.txt `
   --frames 345 `
   --width 704 `
   --height 384 `
   --steps 35 `
   --seed 52 `
-  --output hl_output2.mp4
+  --output output2.mp4
 ```
 
 `--reference-image`, `--reference-video`, and `--image` are different modes and cannot be combined. Reference-media generation is supported by `auto_offload`, `bf16_single`, `max_gpu`, and `context_parallel`; it is not supported by the experimental `multi_gpu` layout.
@@ -471,11 +471,11 @@ environment variable:
 HF_HOME=/home/<user>/hf_models CP_WORLD_SIZE=4 \
   ~/minimax-venv/bin/python LoMMH.py \
   --strategy context_parallel \
-  --reference-image project_2/hl_3.jpg \
-  --reference-image project_2/chongda_a.jpg \
+  --reference-image project_2/img_1.jpg \
+  --reference-image project_2/img_2.jpg \
   --prompt-file project_2/prompt.txt \
   --frames 345 --width 704 --height 384 --steps 30 \
-  --output hl_part1_cp.mp4
+  --output output_cp.mp4
 ```
 
 All ranks run the same request with the same seed; only rank 0 prints progress
