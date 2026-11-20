@@ -10,7 +10,7 @@ Generation is offline after the required model files are present. The script rew
 - First-frame image-to-video (`fl2va`) with `--image`
 - Subject/style reference-image generation (`ref2va`) with one or more `--reference-image` arguments
 - Motion/camera reference-video generation (`ref2va`) with one or more `--reference-video` arguments
-- Video editing (`ref2va`), e.g. replacing a character in an existing clip with a person from a reference image (see [Video editing](#video-editing-with-ref2va))
+- Video editing (`ref2va`): text-driven changes to an existing clip, such as a new hairstyle, while keeping its people, framing and soundtrack (see [Video editing](#video-editing-with-ref2va))
 - Int8 quantisation and CPU/group offloading for smaller GPUs
 - Optional LoRA adapters (`--lora PATH[:SCALE]`, stackable) on every strategy, including the int8 ones
 - Explicit multi-GPU placement for the `max_gpu` strategy (needs ~64 GB/GPU; see note below)
@@ -154,30 +154,31 @@ Interrupted downloads can be resumed by running the same command again. If the H
 
 ### Video editing with `ref2va`
 
-A reference video can be the *source* of an edit rather than only a motion or camera reference: for example, keep a clip's scene, camera, cuts, other actors and soundtrack, but replace one character with the person in a reference image. The model card lists video editing as a `ref2va` task, but results depend heavily on the prompt.
+A reference video can be the *source* of an edit rather than only a motion or camera reference: for example, keep a clip's scene, camera, cuts, actors and soundtrack, but change a character's hairstyle or clothing. The model card lists video editing as a `ref2va` task, but results depend heavily on the prompt.
 
-**Write the prompt in the official structured format.** Free-form prompts such as "replace the woman in Video 1 with Picture 1" were tried here and the reference image was ignored: the output simply reproduced the source video. MiniMax-H3 is trained on prompts produced by its (hosted, not open-sourced) H3-Context-IR rewriter, whose format is documented in the [full-reference prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md). Write the sections in English, in this order:
+> **Face replacement does not work locally.** Every attempt to replace a person in the source video with the face from a reference image failed. The output either copied the source or applied only the text changes (e.g. short hair) and kept the original face. To put a specific person into a scene, generate it from scratch with reference images instead.
+
+**Write the prompt in the official structured format.** With free-form prompts, the output simply reproduced the source video. MiniMax-H3 is trained on prompts produced by its (hosted, not open-sourced) H3-Context-IR rewriter, whose format is documented in the [full-reference prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md). Write the sections in English, in this order:
 
 | Section | Content for an edit |
 | --- | --- |
 | `subject_definitions:` | One line per label. `<Subject 1>` is the person in `<Picture 1>` (describe face and hair); other `<Subject N>` for people kept from the video; `<Video 1> is the source video for the target video edit.`; `<Audio 1> is the synchronized audio track of <Video 1> and is reused in the target video.` |
-| `summary:` | Starts with the task type, e.g. `[video editing + reference generation + audio reuse]`, then `The target video is an edited version of <Video 1>.` and what is replaced. |
+| `summary:` | Starts with the task type, e.g. `[video editing + reference generation + audio reuse]`, then `The target video is an edited version of <Video 1>.` and what changes. |
 | `retention_analysis:` | One line per label with `fully_preserved`, `partially_preserved`, `attribute_transfer` or `weak_reference` (audio: `fully_copy`, `partially_copy`, `reference`). |
 | `detailed_description:` | A one-sentence style opening, then `[Shot 1] ...`, `[Shot 2] At 00:04.500, ...` in playback order, using the labels at each appearance. Speakers get stable IDs, e.g. `<Subject 1> (S1)`, and dialogue is written as `<d>[Chinese] ...</d>` in its original language. |
 | `overall_soundscape:` | Ambience and physical sounds, e.g. copied from `<Audio 1>`. |
 | `non_diegetic_music:` | Background score, or `N/A`. |
 
-See [project_4/prompt_video_v3.txt](project_4/prompt_video_v3.txt) for a complete character-replacement example. Tips:
+See [project_4/prompt_video_v4_edit.txt](project_4/prompt_video_v4_edit.txt) for a complete example. It changed the woman's hair as described, but did not take her face from the reference image. [docs/how-to-video-editing.md](docs/how-to-video-editing.md) has more recipes (look changes, person to animal, extending a clip, scene changes). Tips:
 
-- Match the `[Shot N] At MM:SS.mmm` cut times and dialogue to the actual source clip.
-- In the replaced character's shots, say explicitly that the face is the one from `<Picture 1>`, not the original actor's.
-- Use a large, sharp, tightly cropped face photo as the reference image; a small group photo gives the model little identity to work with.
-- To give the new character a different voice, do not mark `<Audio 1>` as `fully_copy`; reference it instead, or add a voice sample with its own `<Audio N>` label.
+- Match the `[Shot N] At MM:SS.mmm` cut times, shot framing and dialogue to the actual source clip. Wrong shot descriptions make the model fall back to copying the source.
+- Describe each change in text in every shot it applies to, naming the old and the new state.
+- To change a voice, do not mark `<Audio 1>` as `fully_copy`; reference it instead, or add a voice sample with its own `<Audio N>` label.
 
 Run it with [run_ref2va_video.sh](run_ref2va_video.sh) (context parallel under WSL2). Inputs can be overridden with environment variables:
 
 ```powershell
-wsl -d Ubuntu -- bash -lc 'REF_VIDEO=/mnt/d/TQYE/Experiments/MiniMax/project_3/outputs/part1.mp4 REF_IMAGE=/mnt/d/TQYE/Experiments/MiniMax/images/cl.jpg PROMPTFILE=/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt_video_v3.txt OUTPUT=part1_edit.mp4 bash /mnt/d/TQYE/Experiments/MiniMax/run_ref2va_video.sh'
+wsl -d Ubuntu -- bash -lc 'REF_VIDEO=/mnt/d/TQYE/Experiments/MiniMax/project_3/outputs/part1.mp4 REF_IMAGE=/mnt/d/TQYE/Experiments/MiniMax/images/cl.jpg PROMPTFILE=/mnt/d/TQYE/Experiments/MiniMax/project_4/prompt_video_v4_edit.txt OUTPUT=part1_edit.mp4 bash /mnt/d/TQYE/Experiments/MiniMax/run_ref2va_video.sh'
 ```
 
 The equivalent direct call is:
@@ -186,7 +187,7 @@ The equivalent direct call is:
 ~/minimax-venv/bin/python LoMMH.py --strategy context_parallel \
   --reference-image images/cl.jpg \
   --reference-video project_3/outputs/part1.mp4 \
-  --prompt-file project_4/prompt_video_v3.txt \
+  --prompt-file project_4/prompt_video_v4_edit.txt \
   --frames 345 --width 704 --height 384 --steps 35 --seed 22 \
   --reference-video-short-edge 384 \
   --output-dir project_4/outputs --output part1_edit.mp4
@@ -541,7 +542,7 @@ Each output is an MP4 containing the generated video and audio. A JSON run log w
 - **Prompt appears corrupted or uses unexpectedly high memory:** put non-ASCII text in a UTF-8 file and pass it with `--prompt-file`.
 - **OOM during "Encoding prompt" with reference images:** lower `--reference-short-edge` or switch to `auto_offload` (see `run_ref2va_offload.sh`).
 - **OOM during "Encoding prompt" with a reference video:** lower `--reference-video-short-edge` (e.g. 384) or `--frames`.
-- **Video edit ignores the reference image:** write the prompt in the structured full-reference format (see [Video editing](#video-editing-with-ref2va)) and use a clearer face photo.
+- **Video edit copies the source unchanged:** write the prompt in the structured full-reference format (see [Video editing](#video-editing-with-ref2va)), match the real shots, and describe the change in text. Replacing a face from a reference image is not supported.
 - **`context_parallel` fails with "Distributed package doesn't have NCCL built in":** run it under WSL2/Linux, not native Windows.
 - **`--lora` fails with a size mismatch:** the LoRA was trained against a pruned checkpoint and does not fit the full MiniMax-H3 model.
 - **`--lora needs PEFT`:** install it in the GPU venv (`~/minimax-venv/bin/pip install peft`).

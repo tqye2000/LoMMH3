@@ -39,10 +39,10 @@ export CP_WORLD_SIZE="${CP_WORLD_SIZE:-4}"
 # Do NOT set PYTORCH_CUDA_ALLOC_CONF=expandable_segments: WSL2 lacks CUDA VMM.
 
 REF_VIDEO="${REF_VIDEO:-$ROOT/project_3/outputs/part1.mp4}"
-REF_IMAGE="${REF_IMAGE:-$ROOT/images/cl.jpg}"
-PROMPTFILE="${PROMPTFILE:-$ROOT/project_4/prompt_video_v3.txt}"
+REF_IMAGE="${REF_IMAGE:-$ROOT/images/LL1.jpg}"
+PROMPTFILE="${PROMPTFILE:-$ROOT/project_4/prompt_video_v4_edit.txt}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/project_4/outputs}"
-OUTPUT="${OUTPUT:-part1_video_ref_v3.mp4}"
+OUTPUT="${OUTPUT:-part1_video_ref_v4_edit.mp4}"
 
 [[ -f "$REF_VIDEO" ]] || { echo "Reference video not found: $REF_VIDEO" >&2; exit 1; }
 [[ -f "$REF_IMAGE" ]] || { echo "Reference image not found: $REF_IMAGE" >&2; exit 1; }
