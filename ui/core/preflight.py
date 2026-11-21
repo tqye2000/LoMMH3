@@ -133,9 +133,10 @@ def launch_check(settings: Settings, request: JobRequest, project_dir: Path) -> 
         return "fail", f"Generator Python not found: {settings.generator_python}"
     if not settings.generator_script.is_file():
         return "fail", f"Generator script not found: {settings.generator_script}"
-    missing = [img.path for img in request.images if not (project_dir / img.path).is_file()]
+    inputs = [*request.images, *request.videos, *request.audios]
+    missing = [item.path for item in inputs if not (project_dir / item.path).is_file()]
     if missing:
-        return "fail", f"Input image(s) missing: {', '.join(missing)}"
+        return "fail", f"Input file(s) missing: {', '.join(missing)}"
     if settings.model_check:
         if snapshot_dir(settings) is None:
             return "fail", f"MiniMax-H3 model snapshot not found under {settings.hf_home}"

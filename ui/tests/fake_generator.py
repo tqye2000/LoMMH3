@@ -44,9 +44,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     for flag in ("--strategy", "--prompt-file", "--frames", "--width", "--height", "--steps", "--seed",
                  "--output-dir", "--output", "--run-id", "--progress-jsonl", "--image",
-                 "--reference-short-edge"):
+                 "--reference-short-edge", "--reference-video-short-edge"):
         parser.add_argument(flag)
     parser.add_argument("--reference-image", action="append", default=[])
+    parser.add_argument("--reference-video", action="append", default=[])
+    parser.add_argument("--reference-audio", action="append", default=[])
     parser.add_argument("--lora", action="append", default=[])
     parser.add_argument("--no-auto-download", action="store_true")
     args = parser.parse_args()

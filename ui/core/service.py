@@ -16,10 +16,11 @@ from . import constants as C
 from .generation import build_request, effective_params, is_lora_name, validate_step
 from .images import ingest_image
 from .models import (
-    Export, ExportInput, GenerateStep, GenParams, ImageAsset, ImageBinding, Job, Project, PromptRevision, new_id,
-    utc_now,
+    Export, ExportInput, GenerateStep, GenParams, ImageAsset, ImageBinding, Job, MediaAsset, Project, PromptRevision,
+    new_id, utc_now,
 )
 from .preflight import Check, load_repo_module, run_preflight
+from .reference_media import ingest_media
 from .scheduler import Scheduler, tail_lines
 from .settings import Settings
 from .storage import Store, check_id
@@ -148,6 +149,27 @@ class Service:
     def add_image(self, project_id: str, filename: str, data: bytes) -> tuple[ImageAsset, bool]:
         return self.register_image(project_id, self.prepare_image(project_id, filename, data))
 
+    # -- reference media pool --------------------------------------------
+    def prepare_media(self, project_id: str, filename: str, data: bytes) -> MediaAsset:
+        """Validate and store a reference video/audio file only; safe to run in a worker thread."""
+        return ingest_media(self.store.project_dir(check_id(project_id)), filename, data)
+
+    def register_media(self, project_id: str, media: MediaAsset) -> tuple[MediaAsset, bool]:
+        """Record prepared media; duplicates reuse the existing record. Returns (media, created)."""
+        project = self.get_project(project_id)
+        for existing in project.media:
+            if existing.sha256 == media.sha256:
+                (self.store.project_dir(project_id) / media.path).unlink(missing_ok=True)
+                return existing, False
+        project.media.append(media)
+        self.store.save_project(project)
+        self.store.append_activity(project_id, "media.added", f"Reference {media.kind} '{media.name}' added",
+                                   details={"media_id": media.id})
+        return media, True
+
+    def add_media(self, project_id: str, filename: str, data: bytes) -> tuple[MediaAsset, bool]:
+        return self.register_media(project_id, self.prepare_media(project_id, filename, data))
+
     def add_take_frame(self, project_id: str, step_id: str, take_id: str, kind: str) -> tuple[ImageAsset, bool]:
         """Copy a take's first or last frame into the image pool."""
         if kind not in ("first", "last"):
@@ -186,6 +208,8 @@ class Service:
         name: str | None = None,
         mode: str | None = None,
         images: list[ImageBinding] | None = None,
+        ref_videos: list[str] | None = None,
+        ref_audios: list[str] | None = None,
         params: dict[str, Any] | None = None,
     ) -> None:
         """Apply edits; generation-relevant changes bump the step revision."""
@@ -210,6 +234,23 @@ class Service:
             if padded != step.images:
                 step.images = padded
                 changes.append("images")
+        for field, ids in (("ref_videos", ref_videos), ("ref_audios", ref_audios)):
+            if ids is None:
+                continue
+            if len(ids) > C.REFERENCE_MEDIA_SLOTS or len(set(ids)) != len(ids):
+                raise ServiceError(f"Use up to {C.REFERENCE_MEDIA_SLOTS} different reference clips of each kind.")
+            for media_id in ids:
+                try:
+                    media = project.media_asset(media_id)
+                except KeyError as exc:
+                    raise ServiceError(str(exc)) from None
+                if field == "ref_videos" and media.kind != "video":
+                    raise ServiceError(f"'{media.name}' is not a video.")
+                if field == "ref_audios" and not media.has_audio:
+                    raise ServiceError(f"'{media.name}' has no audio.")
+            if ids != getattr(step, field):
+                setattr(step, field, list(ids))
+                changes.append("reference videos" if field == "ref_videos" else "reference audio")
         if params is not None:
             merged = GenParams.model_validate({**project.defaults.model_dump(), **params}).model_dump()
             defaults = project.defaults.model_dump()
@@ -429,6 +470,13 @@ class Service:
         except KeyError as exc:
             raise ServiceError("Media not found.") from exc
         return self.media_file(project_id, asset.thumb if kind == "thumb" else asset.path)
+
+    def reference_media_file(self, project_id: str, media_id: str) -> Path:
+        try:
+            media = self.get_project(project_id).media_asset(media_id)
+        except KeyError as exc:
+            raise ServiceError("Media not found.") from exc
+        return self.media_file(project_id, media.path)
 
     def take_file(self, project_id: str, step_id: str, take_id: str, kind: str) -> Path:
         try:

@@ -9,14 +9,15 @@ from nicegui import run, ui
 
 from ui.core import constants as C
 from ui.core import prompt_ai
-from ui.core.generation import validate_params
+from ui.core.generation import media_labels, validate_params
 from ui.core.images import ImageRejected
 from ui.core.models import Export, GenerateStep, GenParams, Job, Project
+from ui.core.reference_media import MediaRejected
 from ui.core.service import ServiceError
 from ui.core.storage import StorageError
 
 from . import state
-from .media import asset_url, export_url, take_url
+from .media import asset_url, export_url, reference_media_url, take_url
 
 STATE_COLORS = {
     "queued": "grey", "blocked": "brown", "running": "primary", "succeeded": "positive",
@@ -140,6 +141,10 @@ def param_form(
                              min=C.MIN_REFERENCE_SHORT_EDGE, max=C.MAX_REFERENCE_SHORT_EDGE, step=64,
                              format="%d")
         ref_edge.set_visibility(mode in ("ref2va", "any"))
+        video_edge = ui.number("Reference video short edge (px)", value=params.reference_video_short_edge,
+                               min=C.MIN_REFERENCE_VIDEO_SHORT_EDGE, max=C.MAX_REFERENCE_SHORT_EDGE, step=32,
+                               format="%d")
+        video_edge.set_visibility(mode in ("ref2va", "any"))
 
     lora_rows: list[dict[str, Any]] = [lora.model_dump() for lora in params.loras]
     ui.label("LoRAs").classes("text-caption text-weight-medium")
@@ -190,6 +195,7 @@ def param_form(
             "seed": "random" if seed_text in ("", "random") else (int(seed_text) if seed_text.isdigit() else seed_text),
             "strategy": strategy.value, "cp_world_size": as_int(gpus.value),
             "reference_short_edge": as_int(ref_edge.value),
+            "reference_video_short_edge": as_int(video_edge.value),
             "loras": [dict(row) for row in lora_rows],
         }
     return values, draw_loras
@@ -333,6 +339,7 @@ class ProjectWorkspace:
                     with ui.tabs().classes("w-full") as tabs:
                         takes_tab = ui.tab("Takes", icon="movie")
                         pool_tab = ui.tab("Image pool", icon="photo_library")
+                        media_tab = ui.tab("Video/audio", icon="perm_media")
                         exports_tab = ui.tab("Exports", icon="video_library")
                         lora_tab = ui.tab("LoRAs", icon="auto_fix_high")
                     with ui.tab_panels(tabs, value=takes_tab).classes("w-full"):
@@ -340,6 +347,8 @@ class ProjectWorkspace:
                             self.takes()
                         with ui.tab_panel(pool_tab):
                             self.pool_panel()
+                        with ui.tab_panel(media_tab):
+                            self.media_panel()
                         with ui.tab_panel(exports_tab):
                             self.exports_panel()
                         with ui.tab_panel(lora_tab):
@@ -366,6 +375,7 @@ class ProjectWorkspace:
         self.step_list.refresh()
         self.takes.refresh()
         self.pool.refresh()
+        self.media_pool.refresh()
         self.jobs.refresh()
         self.activity.refresh()
         # Only redraw export views when they changed, so playback and checkboxes are not reset.
@@ -426,6 +436,8 @@ class ProjectWorkspace:
 
         if step.mode != "t2va":
             self.image_slots(project, step)
+        if step.mode == "ref2va":
+            self.reference_media(project, step)
 
         ui.label("Parameters").classes("text-subtitle2 q-mt-sm")
         overridden = ", ".join(sorted(step.overrides)) or "none (using project defaults)"
@@ -610,6 +622,88 @@ class ProjectWorkspace:
             ui.button("Close", on_click=dialog.close).props("flat")
         dialog.open()
 
+    # -- reference videos and audio --------------------------------------
+    def reference_media(self, project: Project, step: GenerateStep) -> None:
+        labels = media_labels(project, step)
+        sections = (("ref_videos", "video", "Reference videos", "Motion, camera, or source video; its soundtrack "
+                     "is used too."),
+                    ("ref_audios", "audio", "Reference audio", "Voice, music, or sound to reuse or imitate; "
+                     "needs an image or video reference as well."))
+        for field, kind, title, hint in sections:
+            ids: list[str] = getattr(step, field)
+            with ui.row().classes("items-center gap-2 q-mt-sm"):
+                ui.label(f"{title} ({len(ids)}/{C.REFERENCE_MEDIA_SLOTS})").classes("text-subtitle2")
+                ui.label(hint).classes("text-caption text-grey")
+            for index, media_id in enumerate(ids):
+                with ui.row().classes("w-full items-center no-wrap gap-2"):
+                    try:
+                        media = project.media_asset(media_id)
+                    except KeyError:
+                        ui.label("Missing media").classes("text-negative col")
+                    else:
+                        ui.label(labels.get((kind, media_id), "")).classes("text-weight-medium w-40")
+                        ui.label(f"{media.name} ({media.duration_s:.1f} s)").classes("col ellipsis")
+                        ui.button(icon="play_circle", on_click=lambda m=media: self.preview_media(m.id, m.kind)
+                                  ).props("flat dense round").tooltip("Preview")
+                    ui.button(icon="arrow_upward", on_click=lambda f=field, i=index: self.move_media(f, i, -1)
+                              ).props("flat dense round" + (" disable" if index == 0 else "")).tooltip("Move earlier")
+                    ui.button(icon="arrow_downward", on_click=lambda f=field, i=index: self.move_media(f, i, 1)
+                              ).props("flat dense round" + (" disable" if index == len(ids) - 1 else "")
+                                      ).tooltip("Move later")
+                    ui.button(icon="clear", on_click=lambda f=field, m=media_id: self.set_media(
+                        f, [i for i in getattr(self.step(), f) if i != m])).props("flat dense round").tooltip("Remove")
+            add = ui.button(f"Add {kind}", icon="add", on_click=lambda f=field: self.choose_media(f)).props(
+                "flat dense no-caps")
+            add.set_enabled(len(ids) < C.REFERENCE_MEDIA_SLOTS)
+
+    def set_media(self, field: str, ids: list[str]) -> None:
+        self._update(**{field: ids})
+        self.editor.refresh()
+
+    def move_media(self, field: str, index: int, delta: int) -> None:
+        step = self.step()
+        if step is None:
+            return
+        ids = list(getattr(step, field))
+        target = index + delta
+        if 0 <= target < len(ids):
+            ids[index], ids[target] = ids[target], ids[index]
+            self.set_media(field, ids)
+
+    def choose_media(self, field: str) -> None:
+        step = self.step()
+        if step is None:
+            return
+        used = set(getattr(step, field))
+        if field == "ref_videos":
+            choices = [m for m in self.project.media if m.kind == "video" and m.id not in used]
+        else:
+            choices = [m for m in self.project.media if m.has_audio and m.id not in used]
+        noun = "video" if field == "ref_videos" else "audio clip"
+        with ui.dialog() as dialog, ui.card().classes("w-[640px] max-w-full"):
+            ui.label(f"Choose a reference {noun}").classes("text-h6")
+            if not choices:
+                ui.label("Nothing to choose; upload files in the Video/audio tab.").classes("text-grey")
+            if field == "ref_audios" and any(m.kind == "video" for m in choices):
+                ui.label("Choosing a video uses only its soundtrack.").classes("text-caption text-grey")
+            for media in choices:
+                with ui.row().classes("w-full items-center no-wrap"):
+                    ui.icon("movie" if media.kind == "video" else "audiotrack")
+                    ui.label(media.name).classes("col ellipsis")
+                    ui.label(f"{media.duration_s:.1f} s").classes("text-caption text-grey")
+                    ui.button("Use this", on_click=lambda m=media: (
+                        self.set_media(field, [*getattr(self.step(), field), m.id]), dialog.close())
+                    ).props("flat dense no-caps")
+            ui.button("Close", on_click=dialog.close).props("flat")
+        dialog.open()
+
+    def preview_media(self, media_id: str, kind: str) -> None:
+        with ui.dialog() as dialog, ui.card().classes("w-[640px] max-w-full"):
+            url = reference_media_url(self.pid, media_id)
+            (ui.video(url) if kind == "video" else ui.audio(url)).classes("w-full")
+            ui.button("Close", on_click=dialog.close).props("flat")
+        dialog.open()
+
     # -- takes -----------------------------------------------------------
     @ui.refreshable_method
     def takes(self) -> None:
@@ -768,6 +862,40 @@ class ProjectWorkspace:
                     ui.image(asset_url(self.pid, asset.id)).classes("w-full h-28").props("fit=contain")
                     ui.label(asset.name).classes("text-caption ellipsis w-full")
                     ui.label(f"{asset.width}x{asset.height}").classes("text-caption text-grey")
+
+    # -- reference video/audio pool --------------------------------------
+    def media_panel(self) -> None:
+        async def handle_upload(event) -> None:
+            data = await event.file.read()
+            try:
+                media = await run.io_bound(self.service.prepare_media, self.pid, event.file.name, data)
+            except MediaRejected as exc:
+                ui.notify(str(exc), type="negative")
+                return
+            _media, created = self.service.register_media(self.pid, media)
+            ui.notify(f"Added {event.file.name}" if created else f"{event.file.name} is already in the pool")
+
+        suffixes = ",".join((*C.VIDEO_SUFFIXES, *C.AUDIO_SUFFIXES))
+        ui.upload(label="Add reference videos or audio", multiple=True, auto_upload=True,
+                  max_file_size=C.MAX_MEDIA_UPLOAD_BYTES, on_upload=handle_upload,
+                  on_rejected=lambda: ui.notify("File rejected (too large?)", type="warning")) \
+            .props(f"accept='{suffixes}'").classes("w-full")
+        self.media_pool()
+
+    @ui.refreshable_method
+    def media_pool(self) -> None:
+        project = self.project
+        ui.label(f"{len(project.media)} file(s). Clips must be {C.MIN_REFERENCE_CLIP_S:g}-"
+                 f"{C.MAX_REFERENCE_CLIP_S:g} s; choose them per step in References mode.").classes(
+            "text-caption text-grey")
+        for media in project.media:
+            with ui.row().classes("w-full items-center no-wrap"):
+                ui.icon("movie" if media.kind == "video" else "audiotrack")
+                ui.label(media.name).classes("col ellipsis")
+                sound = ", with sound" if media.kind == "video" and media.has_audio else ""
+                ui.label(f"{media.duration_s:.1f} s{sound}").classes("text-caption text-grey")
+                ui.button(icon="play_circle", on_click=lambda m=media: self.preview_media(m.id, m.kind)).props(
+                    "flat dense round").tooltip("Preview")
 
     # -- exports ---------------------------------------------------------
     @staticmethod

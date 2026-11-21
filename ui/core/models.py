@@ -43,6 +43,8 @@ class GenParams(_Model):
     strategy: str = "context_parallel"
     cp_world_size: int = 4
     reference_short_edge: int | None = 1536
+    # LoMMH's own default (768) OOMs the conditioner on 48 GB cards.
+    reference_video_short_edge: int | None = 384
     loras: list[LoraChoice] = Field(default_factory=list)
 
 
@@ -61,6 +63,19 @@ class ImageBinding(_Model):
     source: Literal["asset"] = "asset"
     asset_id: str | None = None
     enabled: bool = True
+
+
+class MediaAsset(_Model):
+    """An uploaded reference video or audio clip."""
+
+    id: str
+    kind: Literal["video", "audio"]
+    name: str
+    path: str  # project-relative
+    duration_s: float
+    has_audio: bool  # a video's soundtrack is conditioned on too
+    sha256: str
+    added_utc: str
 
 
 class PromptRevision(_Model):
@@ -96,6 +111,8 @@ class GenerateStep(_Model):
         default_factory=lambda: [ImageBinding(enabled=False) for _ in range(C.IMAGE_SLOTS)]
     )
     overrides: dict[str, Any] = Field(default_factory=dict)
+    ref_videos: list[str] = Field(default_factory=list)  # media IDs, in reference order
+    ref_audios: list[str] = Field(default_factory=list)
     takes: list[Take] = Field(default_factory=list)
     selected_take: str | None = None
 
@@ -136,6 +153,7 @@ class Project(_Model):
     archived: bool = False
     defaults: GenParams = Field(default_factory=GenParams)
     assets: list[ImageAsset] = Field(default_factory=list)
+    media: list[MediaAsset] = Field(default_factory=list)
     steps: list[GenerateStep] = Field(default_factory=list)
     exports: list[Export] = Field(default_factory=list)
 
@@ -157,9 +175,20 @@ class Project(_Model):
                 return asset
         raise KeyError(f"Unknown image: {asset_id}")
 
+    def media_asset(self, media_id: str) -> MediaAsset:
+        for media in self.media:
+            if media.id == media_id:
+                return media
+        raise KeyError(f"Unknown reference media: {media_id}")
+
 
 class ResolvedImage(_Model):
     asset_id: str
+    path: str  # project-relative
+
+
+class ResolvedMedia(_Model):
+    media_id: str
     path: str  # project-relative
 
 
@@ -168,6 +197,8 @@ class JobRequest(_Model):
     prompt_text: str
     prompt_revision: int
     images: list[ResolvedImage]
+    videos: list[ResolvedMedia] = Field(default_factory=list)
+    audios: list[ResolvedMedia] = Field(default_factory=list)
     params: GenParams  # seed is always concrete here
 
 

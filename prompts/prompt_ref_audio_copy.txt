@@ -1,0 +1,20 @@
+subject_definitions:
+<Subject 1> is the young woman in <Picture 1>, with a round face, warm dark eyes, and short dark chin-length hair with side-swept bangs.
+<Audio 1> is the speech of <Subject 1> (S1), a soft, warm female voice speaking calmly, and is reused as the complete soundtrack of the target video.
+
+summary:
+[reference generation + audio reuse] The target video shows <Subject 1> sitting by a rain-streaked café window on a quiet evening, holding a cup of tea and speaking to someone off-screen. <Audio 1> is reused 1:1 as the complete final audio track, and <Subject 1>'s lip movements, expressions, and gestures follow its speech exactly.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - the face, facial proportions, dark eyes, and short dark chin-length hair with side-swept bangs of <Picture 1> are retained throughout the shot.
+<Audio 1>: fully_copy - <Audio 1> is reused 1:1 as the target video's complete final audio track.
+
+detailed_description:
+The target video is a realistic, cinematic slice-of-life scene with soft warm interior lighting, shallow depth of field, and gentle film grain.
+[Shot 1] A static medium close-up, with a very slow push-in throughout. <Subject 1> (S1), the young woman from <Picture 1> with a round face, warm dark eyes, and short dark chin-length hair with side-swept bangs, sits at a small wooden table beside a large café window. She wears a cream knitted sweater. Rain streaks the glass behind her, and blurred amber street lights glow outside. She holds a white ceramic cup with both hands, steam curling up from the tea. She looks slightly to the right of the camera at someone off-screen, and her lips move in exact sync with <Audio 1> as she says, <d>[Chinese] 我真没·想到这样的天气你还会来。但是我很高兴你能来。请坐！这茶还是热的。</d> Between phrases she lowers her eyes to the cup, then looks up again with a faint smile, and finally sets the cup on the table and leans back.
+
+overall_soundscape:
+<Audio 1> is reused 1:1 as the complete audio track; no ambience or sound effects are added.
+
+non_diegetic_music:
+N/A
