@@ -25,6 +25,17 @@ MODEL_MAX_REFERENCE_IMAGES = 9
 MIN_REFERENCE_SHORT_EDGE = 64
 MAX_REFERENCE_SHORT_EDGE = 4096
 
+# Reference videos and audio clips: the model takes up to 3 of each, 2-15 s per clip,
+# at most 15 s per kind in total.
+REFERENCE_MEDIA_SLOTS = 3
+MIN_REFERENCE_CLIP_S = 2.0
+MAX_REFERENCE_CLIP_S = 15.0
+REFERENCE_CLIP_TOLERANCE_S = 0.05
+MAX_MEDIA_UPLOAD_BYTES = 300 * 1024 * 1024
+VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".mkv", ".webm")
+AUDIO_SUFFIXES = (".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg")
+MIN_REFERENCE_VIDEO_SHORT_EDGE = 64
+
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_PIXELS = 80_000_000
 ALLOWED_IMAGE_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
@@ -34,7 +45,7 @@ MODES = ("t2va", "fl2va", "ref2va")
 MODE_LABELS = {
     "t2va": "Text only",
     "fl2va": "First frame",
-    "ref2va": "Reference images",
+    "ref2va": "References",
 }
 STRATEGIES = ("context_parallel", "auto_offload", "max_gpu", "bf16_single")
 STRATEGY_LABELS = {

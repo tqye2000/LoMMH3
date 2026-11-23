@@ -207,12 +207,33 @@ Notes:
 ~/minimax-venv/bin/python LoMMH.py \
   --strategy context_parallel \
   --prompt-file project_3/prompt_1.txt \
-  --lora ~/loras/lineart_anime.safetensors:0.8 \
-  --lora ~/loras/turbo.safetensors \
+  --lora /mnt/d/hf_models/loras/h3-realism-people-t2v-i2v-r2v.safetensors:0.8 \
   --output styled.mp4
 ```
 
 Windows paths such as `D:\loras\style.safetensors:0.7` are parsed correctly; only a numeric suffix after the last `:` is taken as the scale.
+
+### Example LoRAs
+
+Two LoRAs are downloaded to `D:\hf_models\loras` (`/mnt/d/hf_models/loras` in WSL) and copied into the MiniMax Studio library (`~/minimax-ui-data/loras`). Both target the full (unpruned) transformer and have been checked to load into it.
+
+| File | Source | Trigger word | Scale | Use |
+| --- | --- | --- | --- | --- |
+| `h3-realism-people-t2v-i2v-r2v.safetensors` (0.12 GB) | [fal/MiniMax-H3-Realism-People-LoRA](https://huggingface.co/fal/MiniMax-H3-Realism-People-LoRA) | `r34l1sm` | 1.0 (0.6–0.8 lighter) | Realistic people: skin texture, faces, film lighting. t2va, fl2va, ref2va. |
+| `wushu_action_v7_fl2va_aitoolkit_adaln_full-int8convrot_bf16te_2000step.safetensors` (0.56 GB) | [Jojocodex/wushu-action-v7-minimax-h3-fl2va-ref2va-lora](https://huggingface.co/Jojocodex/wushu-action-v7-minimax-h3-fl2va-ref2va-lora) | `wushu_action` | 0.8–1.0 (0.6–0.8 if limbs or weapons break) | Martial-arts motion. Name specific moves (e.g. 扫堂腿, 腾空侧踹) and keep 1–2 moves per shot. Trained on single fighters, so duels are less stable. |
+
+Start the prompt with the trigger word, for example `r34l1sm, a young woman faces the camera ...`. Check each model card for its license terms (the realism LoRA follows the MiniMax-H3 community license).
+
+Stay close to the LoRA's training setup. Check its model card and the `ss_datasets` entry in the file's metadata. The wushu LoRA was trained on 832×480 clips of 39–124 frames (1.6–5 s). With it, a 345-frame, 1056×576 single shot at scale 1.0 fell apart: the cat changed shape, the clip cut away by itself, and frames blurred. The same prompt at 832×480, 124 frames and scale 0.8 stayed coherent. For longer scenes, generate several short steps and chain them with **Use in next step**.
+
+Download more with the Windows venv (WSL's TLS setup rejects the Hub certificate), then copy into the UI library or upload them in the LoRAs tab:
+
+```powershell
+& '.venv\Scripts\python.exe' -c "from huggingface_hub import hf_hub_download as d; print(d('fal/MiniMax-H3-Realism-People-LoRA', 'h3-realism-people-t2v-i2v-r2v.safetensors', local_dir=r'D:\hf_models\loras'))"
+wsl -d Ubuntu -- bash -lc 'cp /mnt/d/hf_models/loras/*.safetensors ~/minimax-ui-data/loras/'
+```
+
+Avoid distillation ("Turbo", 4/8-step) LoRAs for now: they need CFG disabled and a custom scheduler shift, which `LoMMH.py` does not expose. Also avoid LoRAs trained on a pruned checkpoint.
 
 Notes:
 
@@ -398,6 +419,7 @@ and clips without audio contribute silence.
 | `--image PATH` | — | First-frame image for `fl2va`. |
 | `--reference-image PATH` | — | Reference image for `ref2va`; repeat up to 9 times. |
 | `--reference-video PATH` | — | Motion/camera reference video for `ref2va`; repeat up to 3 times. The video's soundtrack is used as a reference audio track when present. |
+| `--reference-audio PATH` | — | Voice/music reference for `ref2va` (audio file, or a video whose soundtrack is taken); repeat up to 3 times, 2–15 s each. Must be paired with at least one `--reference-image` or `--reference-video`; at most 12 references in total. Label it `<Audio N>` in the prompt. |
 | `--reference-short-edge PX` | 2048 | Short edge (64–4096) reference images are resized to before encoding. |
 | `--reference-video-short-edge PX` | 768 | Short edge (≥64) reference videos are resized to before encoding, independent of `--width`/`--height`. Lower it to avoid conditioner OOMs. |
 | `--frames N` | 345 | Requested frame count at 24 fps; automatically snapped to a valid value. |

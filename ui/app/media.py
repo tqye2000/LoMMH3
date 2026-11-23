@@ -23,6 +23,14 @@ def install() -> None:
             raise HTTPException(status_code=404) from exc
         return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
 
+    @app.get("/media/{project_id}/refs/{media_id}")
+    def reference_media(project_id: str, media_id: str) -> FileResponse:
+        try:
+            path = state.service.reference_media_file(project_id, media_id)
+        except (ServiceError, StorageError) as exc:
+            raise HTTPException(status_code=404) from exc
+        return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+
     @app.get("/media/{project_id}/takes/{step_id}/{take_id}/{kind}")
     def take_media(project_id: str, step_id: str, take_id: str, kind: str) -> FileResponse:
         try:
@@ -45,6 +53,10 @@ def install() -> None:
 
 def asset_url(project_id: str, asset_id: str, kind: str = "thumb") -> str:
     return f"/media/{project_id}/assets/{asset_id}/{kind}"
+
+
+def reference_media_url(project_id: str, media_id: str) -> str:
+    return f"/media/{project_id}/refs/{media_id}"
 
 
 def take_url(project_id: str, step_id: str, take_id: str, kind: str) -> str:

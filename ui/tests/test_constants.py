@@ -27,6 +27,8 @@ def test_constants_match_generator() -> None:
     assert lommh["MAX_FRAMES"] == C.MAX_FRAMES
     assert lommh["_MAX_REFERENCE_IMAGES"] == C.MODEL_MAX_REFERENCE_IMAGES
     assert C.IMAGE_SLOTS <= C.MODEL_MAX_REFERENCE_IMAGES
+    assert lommh["_MAX_REFERENCE_VIDEOS"] == C.REFERENCE_MEDIA_SLOTS
+    assert lommh["_MAX_REFERENCE_AUDIOS"] == C.REFERENCE_MEDIA_SLOTS
 
 
 def test_frame_rules() -> None:

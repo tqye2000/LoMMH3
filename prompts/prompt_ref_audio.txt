@@ -1,0 +1,21 @@
+subject_definitions:
+<Subject 1> is the young woman in <Picture 1>, with a round face, warm dark eyes, and short dark chin-length hair with side-swept bangs.
+<Audio 1> is the voice-timbre reference for <Subject 1> (S1), providing a soft, warm female voice with a calm, unhurried delivery.
+
+summary:
+[reference generation + audio reference] The target video shows <Subject 1> sitting by a rain-streaked café window on a quiet evening, holding a cup of tea and speaking to someone off-screen. She speaks in the voice timbre and delivery of <Audio 1>, but says new words; the original signal and words of <Audio 1> are not copied.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - the face, facial proportions, dark eyes, and short dark chin-length hair with side-swept bangs of <Picture 1> are retained in both shots.
+<Audio 1>: reference - the speech of <Subject 1> follows the voice timbre, pitch, and calm pacing of <Audio 1> without copying the original signal or its words.
+
+detailed_description:
+The target video is a realistic, cinematic slice-of-life scene with soft warm interior lighting, shallow depth of field, and gentle film grain.
+[Shot 1] A static medium close-up. <Subject 1> (S1), the young woman from <Picture 1> with a round face, warm dark eyes, and short dark chin-length hair with side-swept bangs, sits at a small wooden table beside a large café window. She wears a cream knitted sweater. Rain streaks the glass behind her, and blurred amber street lights glow outside. She holds a white ceramic cup with both hands, steam curling up from the tea. She looks slightly to the right of the camera at someone off-screen, smiles faintly, and says in a soft, warm voice, <d>[Chinese] 我真没·想到这样的天气你还会来。</d>
+[Shot 2] At 00:05.000, the shot cuts to a closer shot of <Subject 1>'s face, the camera pushing in slowly. She lowers her eyes to the cup, then looks up again, and says gently, <d>[Chinese] 但是我很高兴你能来。请坐！这茶还是热的。</d> She sets the cup on the table and leans back, the rain continuing on the window.
+
+overall_soundscape:
+Steady rain tapping on the window glass, quiet café murmur in the background, and the soft clink of the ceramic cup on the wooden table.
+
+non_diegetic_music:
+A gentle solo piano at a slow tempo, quiet and sparse, staying under the dialogue throughout.

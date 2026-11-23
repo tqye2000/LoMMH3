@@ -56,6 +56,29 @@ async def test_step_can_pick_a_lora_from_the_library(user: User, ui_env) -> None
 async def test_media_requires_session(user: User) -> None:
     response = await user.http_client.get("/media/prj_0123456789/assets/img_0123456789/thumb")
     assert response.status_code == 401
+    response = await user.http_client.get("/media/prj_0123456789/refs/med_0123456789")
+    assert response.status_code == 401
+
+
+async def test_reference_mode_shows_video_and_audio_pickers(user: User) -> None:
+    from ui.app import state
+
+    from .test_reference_media import wav_bytes
+
+    await user.open(f"/login?token={UI_TOKEN}")
+    project = state.service.create_project("Voices")
+    state.service.add_media(project.id, "voice.wav", wav_bytes(3.0))
+    step = state.service.add_step(project.id)
+    state.service.update_step(project.id, step.id, mode="ref2va")
+    await user.open(f"/project/{project.id}")
+    await user.should_see("Reference videos (0/3)")
+    await user.should_see("Reference audio (0/3)")
+    user.find(kind=ui.button, content="Add audio").click()
+    await user.should_see("Choose a reference audio clip")
+    user.find(kind=ui.button, content="Use this").click()
+    await user.should_see("<Audio 1>")
+    assert state.service.get_project(project.id).step(step.id).ref_audios
+    await user.should_see("cannot be used on its own")
 
 
 async def test_foreign_host_is_rejected(user: User) -> None:

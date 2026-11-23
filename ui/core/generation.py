@@ -8,7 +8,7 @@ import secrets
 from pathlib import Path
 
 from . import constants as C
-from .models import GenerateStep, GenParams, Job, JobRequest, Project, ResolvedImage
+from .models import GenerateStep, GenParams, Job, JobRequest, MediaAsset, Project, ResolvedImage, ResolvedMedia
 from .settings import Settings
 
 _SECRET_ENV = re.compile(r"(OPENAI|API_KEY|_KEY$|TOKEN|SECRET|PASSWORD)", re.IGNORECASE)
@@ -61,6 +61,13 @@ def validate_params(params: GenParams, mode: str) -> list[str]:
             f"Reference short edge must be between {C.MIN_REFERENCE_SHORT_EDGE} "
             f"and {C.MAX_REFERENCE_SHORT_EDGE}."
         )
+    if mode == "ref2va" and params.reference_video_short_edge is not None and not (
+        C.MIN_REFERENCE_VIDEO_SHORT_EDGE <= params.reference_video_short_edge <= C.MAX_REFERENCE_SHORT_EDGE
+    ):
+        errors.append(
+            f"Reference video short edge must be between {C.MIN_REFERENCE_VIDEO_SHORT_EDGE} "
+            f"and {C.MAX_REFERENCE_SHORT_EDGE}."
+        )
     if len(params.loras) > C.MAX_LORAS:
         errors.append(f"At most {C.MAX_LORAS} LoRAs are allowed.")
     names = [lora.name for lora in params.loras]
@@ -94,6 +101,50 @@ def selected_images(project: Project, step: GenerateStep) -> list[ResolvedImage]
     return resolved
 
 
+def reference_media(project: Project, step: GenerateStep) -> tuple[list[MediaAsset], list[MediaAsset]]:
+    """The step's (videos, audio clips) in reference order; raises KeyError for a missing one."""
+    return ([project.media_asset(i) for i in step.ref_videos],
+            [project.media_asset(i) for i in step.ref_audios])
+
+
+def media_labels(project: Project, step: GenerateStep) -> dict[tuple[str, str], str]:
+    """Prompt labels per (kind, media ID); a video's soundtrack takes the next ``<Audio j>``."""
+    labels, audio = {}, 0
+    for k, media_id in enumerate(step.ref_videos, 1):
+        label = f"<Video {k}>"
+        try:
+            if project.media_asset(media_id).has_audio:
+                audio += 1
+                label = f"<Audio {audio}> + {label}"
+        except KeyError:
+            pass
+        labels[("video", media_id)] = label
+    for media_id in step.ref_audios:
+        audio += 1
+        labels[("audio", media_id)] = f"<Audio {audio}>"
+    return labels
+
+
+def _clip_errors(clips: list[MediaAsset], noun: str) -> list[str]:
+    errors = []
+    low = C.MIN_REFERENCE_CLIP_S - C.REFERENCE_CLIP_TOLERANCE_S
+    high = C.MAX_REFERENCE_CLIP_S + C.REFERENCE_CLIP_TOLERANCE_S
+    if len(clips) > C.REFERENCE_MEDIA_SLOTS:
+        errors.append(f"At most {C.REFERENCE_MEDIA_SLOTS} reference {noun}s are allowed.")
+    for clip in clips:
+        if not low <= clip.duration_s <= high:
+            errors.append(
+                f"Reference {noun} '{clip.name}' is {clip.duration_s:.1f} s; each must be "
+                f"{C.MIN_REFERENCE_CLIP_S:g}-{C.MAX_REFERENCE_CLIP_S:g} s."
+            )
+    total = sum(clip.duration_s for clip in clips)
+    if total > high:
+        errors.append(
+            f"Reference {noun}s total {total:.1f} s; at most {C.MAX_REFERENCE_CLIP_S:g} s are allowed."
+        )
+    return errors
+
+
 def validate_step(
     project: Project, step: GenerateStep, prompt_text: str, lora_dir: Path | None = None
 ) -> list[str]:
@@ -104,14 +155,21 @@ def validate_step(
         errors.append(f"At most {C.IMAGE_SLOTS} image slots are allowed.")
     try:
         images = selected_images(project, step)
+        videos, audios = reference_media(project, step)
     except KeyError as exc:
         return [*errors, str(exc)]
     if step.mode == "t2va" and images:
         errors.append("Text-only mode uses no images; disable the image slots.")
     if step.mode == "fl2va" and len(images) != 1:
         errors.append("First-frame mode needs exactly one enabled image.")
-    if step.mode == "ref2va" and not images:
-        errors.append(f"Reference mode needs 1 to {C.IMAGE_SLOTS} enabled images.")
+    if step.mode == "ref2va":
+        if not images and not videos:
+            errors.append(
+                f"Reference mode needs 1 to {C.IMAGE_SLOTS} enabled images or a reference video "
+                "(reference audio cannot be used on its own)."
+            )
+        errors += _clip_errors(videos, "video")
+        errors += _clip_errors(audios, "audio clip")
     errors += validate_params(effective_params(project, step), step.mode)
     if lora_dir is not None:
         errors += missing_loras(effective_params(project, step), lora_dir)
@@ -123,11 +181,14 @@ def build_request(project: Project, step: GenerateStep, prompt_text: str) -> Job
     params = effective_params(project, step)
     if params.seed == "random":
         params = params.model_copy(update={"seed": secrets.randbelow(C.SEED_MAX + 1)})
+    videos, audios = reference_media(project, step) if step.mode == "ref2va" else ([], [])
     return JobRequest(
         mode=step.mode,
         prompt_text=prompt_text,
         prompt_revision=step.prompt_revision,
         images=selected_images(project, step),
+        videos=[ResolvedMedia(media_id=m.id, path=m.path) for m in videos],
+        audios=[ResolvedMedia(media_id=m.id, path=m.path) for m in audios],
         params=params,
     )
 
@@ -157,8 +218,14 @@ def build_command(
     elif req.mode == "ref2va":
         for image in req.images:
             cmd += ["--reference-image", str(project_dir / image.path)]
+        for video in req.videos:
+            cmd += ["--reference-video", str(project_dir / video.path)]
+        for audio in req.audios:
+            cmd += ["--reference-audio", str(project_dir / audio.path)]
         if p.reference_short_edge is not None:
             cmd += ["--reference-short-edge", str(p.reference_short_edge)]
+        if req.videos and p.reference_video_short_edge is not None:
+            cmd += ["--reference-video-short-edge", str(p.reference_video_short_edge)]
     for lora in p.loras:
         cmd += ["--lora", f"{settings.lora_path / lora.name}:{lora.scale}"]
     return cmd

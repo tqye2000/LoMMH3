@@ -14,6 +14,7 @@ Quick start
     python LoMMH.py --image first.jpg     # image-to-video (FL2VA)
     python LoMMH.py --reference-image subject.png   # subject reference (REF2VA)
     python LoMMH.py --reference-video motion.mp4     # motion/camera reference (REF2VA)
+    python LoMMH.py --reference-image s.png --reference-audio voice.wav  # voice/music ref
     python LoMMH.py --strategy auto_offload   # 24-32 GB VRAM
     python LoMMH.py --lora style.safetensors:0.8     # apply a LoRA (repeatable)
     python LoMMH.py --help                # all options
@@ -223,6 +224,7 @@ class Config:
     image: str | None = None          # first-frame image → FL2VA (else T2VA)
     reference_images: list[str] = field(default_factory=list)  # subject refs → REF2VA
     reference_videos: list[str] = field(default_factory=list)  # motion/camera refs → REF2VA
+    reference_audios: list[str] = field(default_factory=list)  # voice/music refs → REF2VA
     reference_short_edge: int | None = None  # ref2va: override encode short edge (default 2048)
     reference_video_short_edge: int | None = None  # ref2va: override video-ref short edge (default 768)
     num_frames: int = MAX_FRAMES      # 24 fps; snapped to 17*n+5 in [124, 345]
@@ -249,8 +251,8 @@ class Config:
 
     @property
     def has_references(self) -> bool:
-        """Whether any ref2va reference (image or video) was supplied."""
-        return bool(self.reference_images or self.reference_videos)
+        """Whether any ref2va reference (image, video or audio) was supplied."""
+        return bool(self.reference_images or self.reference_videos or self.reference_audios)
 
 
 # ---------------------------------------------------------------------------
@@ -527,9 +529,10 @@ def _build_references(config: Config) -> list:
     presentation and lays it out on the shared audio/video rotary clock, so a
     different order is a different request. Image references (``<Picture i>``)
     come first, then video references (``<Video k>``, conditioned on together
-    with their own soundtrack).
+    with their own soundtrack), then standalone audio references (``<Audio j>``).
     """
     from diffusers.modular_pipelines.minimax_h3.references import (
+        MiniMaxH3AudioReference,
         MiniMaxH3ImageReference,
         MiniMaxH3VideoReference,
     )
@@ -540,7 +543,35 @@ def _build_references(config: Config) -> list:
     references += [
         MiniMaxH3VideoReference.from_file(path) for path in config.reference_videos
     ]
+    references += [
+        MiniMaxH3AudioReference.from_file(path) for path in config.reference_audios
+    ]
+    for reference in references:
+        if getattr(reference, "audio", None) is not None:
+            reference.audio, reference.sample_rate = _resample_audio(
+                reference.audio, reference.sample_rate
+            )
     return references
+
+
+# The audio VAE's rate; diffusers needs torchaudio to resample onto it, so it is done here.
+AUDIO_VAE_SAMPLE_RATE = 32000
+
+
+def _resample_audio(waveform: torch.Tensor, sample_rate: int | None) -> tuple[torch.Tensor, int]:
+    """Resample a ``(channels, samples)`` waveform to the audio VAE's rate with SciPy."""
+    if sample_rate is None or sample_rate == AUDIO_VAE_SAMPLE_RATE:
+        return waveform, AUDIO_VAE_SAMPLE_RATE
+    from scipy.signal import resample_poly
+
+    divisor = math.gcd(sample_rate, AUDIO_VAE_SAMPLE_RATE)
+    resampled = resample_poly(
+        torch.as_tensor(waveform, dtype=torch.float32).numpy(),
+        AUDIO_VAE_SAMPLE_RATE // divisor,
+        sample_rate // divisor,
+        axis=-1,
+    )
+    return torch.from_numpy(resampled.astype("float32")), AUDIO_VAE_SAMPLE_RATE
 
 
 
@@ -900,6 +931,10 @@ def _print_run_header(config: Config, mode: str) -> None:
         print(f"[MiniMax-H3] Refs:   {len(config.reference_videos)} video(s)")
         for path in config.reference_videos:
             print(f"[MiniMax-H3]          - {path}")
+    if config.reference_audios:
+        print(f"[MiniMax-H3] Refs:   {len(config.reference_audios)} audio(s)")
+        for path in config.reference_audios:
+            print(f"[MiniMax-H3]          - {path}")
     print(
         f"[MiniMax-H3] Frames: {config.num_frames} (~{config.duration_s:.1f}s @ {FPS}fps)"
         f"  Size: {config.width}×{config.height}  Steps: {config.steps}  Seed: {config.seed}\n"
@@ -978,8 +1013,8 @@ def _run_context_parallel(plan: "_ContextParallelPlan", config: Config) -> tuple
         reference_encoder.load_components(dtype=torch.bfloat16)
         reference_encoder.vae.to(device)
         if hasattr(reference_encoder, "audio_vae"):
-            # fl2va's keyframe is video-only; only ref2va (its video references
-            # can carry audio) registers an audio_vae on this stage.
+            # fl2va's keyframe is video-only; only ref2va (video soundtracks and
+            # audio references) registers an audio_vae on this stage.
             reference_encoder.audio_vae.to(device)
         state = reference_encoder(state=state)
         del reference_encoder
@@ -1157,6 +1192,7 @@ def save_output(
             "image": config.image,
             "reference_images": config.reference_images,
             "reference_videos": config.reference_videos,
+            "reference_audios": config.reference_audios,
             "requested_frames": (
                 config.num_frames
                 if requested_num_frames is None
@@ -1230,6 +1266,12 @@ def parse_args() -> Config:
              "combined with --image. Needs PyAV (pip install av).",
     )
     parser.add_argument(
+        "--reference-audio", dest="reference_audios", action="append", metavar="PATH",
+        help="Voice/music reference audio (or a video whose soundtrack is taken) → "
+             "REF2VA mode. Repeat for up to 3 clips (2–15 s each). Must be paired "
+             "with at least one --reference-image or --reference-video. Needs PyAV.",
+    )
+    parser.add_argument(
         "--reference-short-edge", dest="reference_short_edge", type=int,
         default=defaults.reference_short_edge, metavar="PX",
         help="ref2va only: short edge (px) each reference image is encoded at "
@@ -1280,6 +1322,7 @@ def parse_args() -> Config:
 
     reference_images = args.reference_images or []
     reference_videos = args.reference_videos or []
+    reference_audios = args.reference_audios or []
 
     # A UTF-8 prompt file bypasses shell/code-page corruption of non-ASCII text
     # (e.g. CJK) that can otherwise inflate the token count and blow up memory.
@@ -1293,6 +1336,7 @@ def parse_args() -> Config:
         image=args.image,
         reference_images=reference_images,
         reference_videos=reference_videos,
+        reference_audios=reference_audios,
         reference_short_edge=args.reference_short_edge,
         reference_video_short_edge=args.reference_video_short_edge,
         num_frames=args.frames,
@@ -1325,6 +1369,8 @@ def _parse_lora(value: str) -> tuple[str, float]:
 _REF2VA_STRATEGIES = ("auto_offload", "bf16_single", "max_gpu", "context_parallel")
 _MAX_REFERENCE_IMAGES = 9
 _MAX_REFERENCE_VIDEOS = 3
+_MAX_REFERENCE_AUDIOS = 3
+_MAX_REFERENCES = 12
 
 
 def _validate_config(config: Config) -> None:
@@ -1341,7 +1387,7 @@ def _validate_config(config: Config) -> None:
         return
     if config.image is not None:
         raise SystemExit(
-            "[MiniMax-H3] --reference-image/--reference-video (ref2va) and "
+            "[MiniMax-H3] --reference-image/--reference-video/--reference-audio (ref2va) and "
             "--image (fl2va) are different modes; pass only one."
         )
     if len(config.reference_images) > _MAX_REFERENCE_IMAGES:
@@ -1354,11 +1400,25 @@ def _validate_config(config: Config) -> None:
             f"[MiniMax-H3] At most {_MAX_REFERENCE_VIDEOS} reference videos are "
             f"supported; got {len(config.reference_videos)}."
         )
-    missing = [
-        p
-        for p in (*config.reference_images, *config.reference_videos)
-        if not Path(p).is_file()
-    ]
+    if len(config.reference_audios) > _MAX_REFERENCE_AUDIOS:
+        raise SystemExit(
+            f"[MiniMax-H3] At most {_MAX_REFERENCE_AUDIOS} reference audio clips are "
+            f"supported; got {len(config.reference_audios)}."
+        )
+    all_references = (
+        *config.reference_images, *config.reference_videos, *config.reference_audios
+    )
+    if len(all_references) > _MAX_REFERENCES:
+        raise SystemExit(
+            f"[MiniMax-H3] At most {_MAX_REFERENCES} references in total are "
+            f"supported; got {len(all_references)}."
+        )
+    if config.reference_audios and not (config.reference_images or config.reference_videos):
+        raise SystemExit(
+            "[MiniMax-H3] --reference-audio must be paired with at least one "
+            "--reference-image or --reference-video."
+        )
+    missing = [p for p in all_references if not Path(p).is_file()]
     if missing:
         raise SystemExit(
             "[MiniMax-H3] Reference media not found: " + ", ".join(missing)
