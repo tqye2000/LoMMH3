@@ -14,7 +14,24 @@ def test_project_round_trip_and_reopen(tmp_path: Path) -> None:
     project = store.create_project("Demo")
     reopened = Store(tmp_path).load_project(project.id)
     assert reopened.name == "Demo"
-    assert (tmp_path / "projects" / project.id / "assets").is_dir()
+    assert (tmp_path / "projects" / f"Demo--{project.id}" / "assets").is_dir()
+
+
+def test_project_folder_name_is_readable_and_safe(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    project = store.create_project("../重返 旧地: v2")
+    folder = store.project_dir(project.id)
+    assert folder.parent == tmp_path / "projects"
+    assert folder.name == f"重返-旧地-v2--{project.id}"
+    assert [p.id for p in Store(tmp_path).list_projects()] == [project.id]
+
+
+def test_legacy_id_only_project_folder_still_loads(tmp_path: Path) -> None:
+    legacy = Project(id="prj_0123456789", name="Old", created_utc="t", updated_utc="t")
+    write_model(tmp_path / "projects" / legacy.id / "project.json", legacy)
+    store = Store(tmp_path)
+    assert [p.name for p in store.list_projects()] == ["Old"]
+    assert store.project_dir(legacy.id) == tmp_path / "projects" / legacy.id
 
 
 def test_backup_recovers_corrupt_file(tmp_path: Path) -> None:
