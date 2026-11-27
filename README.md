@@ -29,11 +29,15 @@ Generation is offline after the required model files are present. The script rew
 - `download_transformer_ref.py` — resumable downloader for the `ref2va` transformer partition
 - `save_video_frames.py` — saves the first and last frames of a video as PNG images
 - `join_videos_with_audio.py` — joins two or more videos into one MP4, keeping audio in sync
+- `tools/sam3d/sam3d_body.py` — SAM 3D Body image/video inference and checkpoint download CLI
+- `tools/sam3d/run_sam3d.ps1` — Windows runner (launch from the repository root with `.\tools\sam3d\run_sam3d.ps1`)
+- `tools/sam3d/install_sam3d_wsl.sh` — installs SAM 3D inference dependencies in the WSL GPU environment
+- `experiments/test_minimax-h3_v0.py` — early standalone pipeline test with hard-coded settings
+- `experiments/make_mask.py` — legacy LTX mask-generation experiment
 - `wsl_setup.sh` — one-time creation of the WSL2 GPU venv (`~/minimax-venv`, Linux `torch` with NCCL)
 - `stage_cache_wsl.sh` — copies the model cache onto WSL2 ext4 (`~/hf_models`) for faster loading
 - Windows launchers: `run_local.ps1`, `run_local_2.ps1`, `run_local_ref.ps1`, `run_local_cp.ps1`, `run_t2va.ps1`, `run_fl2va.ps1`
 - WSL2/Linux launchers: `run_local.sh`, `run_local_cp.sh`, `run_t2va.sh`, `run_fl2va.sh`, `run_ref2va.sh`, `run_ref2va_cp.sh` (context parallel), `run_ref2va_offload.sh` (single-GPU `auto_offload` for conditioner OOMs), `run_ref2va_video.sh` (reference video + reference image, e.g. video editing)
-- `test_minimax-h3_v0.py` — early standalone pipeline test with hard-coded settings
 - `prompts/`, `project_*/` — example UTF-8 prompts, reference images, and run logs
 - `docs/` — prompt notes, reference-image plan, and the UI implementation plan
 - `outputs/` — generated MP4 files and run logs
