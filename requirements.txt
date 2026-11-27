@@ -10,3 +10,32 @@ peft
 torchao
 av
 Pillow
+
+# SAM 3D Body (sam3d_body.py). detectron2, MoGe, utils3d-moge, pipeline and the DINOv3 hub repo
+# are installed from local git clones with --no-deps by install_sam3d_wsl.sh (WSL only).
+torchvision
+pytorch-lightning
+pyrender
+opencv-python-headless
+yacs
+einops
+timm
+roma
+braceexpand
+omegaconf
+hydra-core
+trimesh
+fvcore
+iopath
+pycocotools
+cloudpickle
+tabulate
+termcolor
+matplotlib
+huggingface_hub
+pyrootutils
+loguru
+click
+tqdm
+# detectron2's model_zoo still imports pkg_resources.
+setuptools<81
