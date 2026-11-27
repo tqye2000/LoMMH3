@@ -165,32 +165,70 @@ def video(args: argparse.Namespace) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     with av.open(args.input) as src, av.open(str(dst), "w") as out:
         vin = src.streams.video[0]
+        ain = src.streams.audio[0] if src.streams.audio and not args.no_audio else None
         # libx264 + yuv420p needs even dimensions.
         w, h = vin.codec_context.width // 2 * 2, vin.codec_context.height // 2 * 2
         vout = out.add_stream("libx264", rate=vin.average_rate or 30)
         vout.width, vout.height, vout.pix_fmt = w, h, "yuv420p"
         vout.options = {"crf": "18"}
+
+        aout, acopy = None, False
+        if ain is not None:
+            # AAC/MP3 can be stream-copied into mp4; anything else (pcm, vorbis, ...) is re-encoded to AAC.
+            acopy = ain.codec_context.name in {"aac", "mp3"}
+            if acopy:
+                add_tpl = getattr(out, "add_stream_from_template", None)
+                aout = add_tpl(ain) if add_tpl else out.add_stream(template=ain)
+            else:
+                aout = out.add_stream("aac", rate=ain.codec_context.sample_rate)
+
         render = WhiteModelRenderer(estimator.faces, w, h)
         bg_fill = {"black": 0, "white": 255}.get(args.background)
         cam_int = None
 
         total = vin.frames or None
+        stop = None
         if args.max_frames:
             total = min(total or args.max_frames, args.max_frames)
-        for i, frame in enumerate(tqdm(src.decode(vin), total=total, unit="frame")):
+            stop = args.max_frames / float(vin.average_rate or 30)
+
+        i = 0
+        bar = tqdm(total=total, unit="frame")
+        for packet in src.demux(*[s for s in (vin, ain) if s is not None]):
+            if packet.stream is ain:
+                if stop is not None and packet.pts is not None and packet.pts * packet.time_base >= stop:
+                    continue
+                if acopy:
+                    if packet.dts is None:
+                        continue
+                    packet.stream = aout
+                    out.mux(packet)
+                else:
+                    for aframe in packet.decode():
+                        out.mux(aout.encode(aframe))
+                continue
+
             if args.max_frames and i >= args.max_frames:
-                break
-            rgb = np.ascontiguousarray(frame.to_ndarray(format="rgb24")[:h, :w])
-            if cam_int is None and estimator.fov_estimator is not None and not args.per_frame_fov:
-                # Fixed intrinsics from the first frame avoid focal-length jitter between frames.
-                cam_int = estimator.fov_estimator.get_cam_intrinsics(rgb)
-            with contextlib.redirect_stdout(io.StringIO()):
-                outputs = estimator.process_one_image(rgb, cam_int=cam_int, bbox_thr=args.bbox_thresh)
-            background = rgb if bg_fill is None else np.full_like(rgb, bg_fill)
-            img = render(outputs, background)
-            out.mux(vout.encode(av.VideoFrame.from_ndarray(img, format="rgb24")))
+                continue
+            for frame in packet.decode():
+                if args.max_frames and i >= args.max_frames:
+                    break
+                rgb = np.ascontiguousarray(frame.to_ndarray(format="rgb24")[:h, :w])
+                if cam_int is None and estimator.fov_estimator is not None and not args.per_frame_fov:
+                    # Fixed intrinsics from the first frame avoid focal-length jitter between frames.
+                    cam_int = estimator.fov_estimator.get_cam_intrinsics(rgb)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    outputs = estimator.process_one_image(rgb, cam_int=cam_int, bbox_thr=args.bbox_thresh)
+                background = rgb if bg_fill is None else np.full_like(rgb, bg_fill)
+                img = render(outputs, background)
+                out.mux(vout.encode(av.VideoFrame.from_ndarray(img, format="rgb24")))
+                i += 1
+                bar.update()
+        bar.close()
         out.mux(vout.encode())
-    print(f"Saved {dst}")
+        if aout is not None and not acopy:
+            out.mux(aout.encode())
+    print(f"Saved {dst}" + (" (with audio)" if aout is not None else ""))
 
 
 def main() -> None:
@@ -217,6 +255,7 @@ def main() -> None:
     p_vid.add_argument("--bbox-thresh", type=float, default=0.8)
     p_vid.add_argument("--max-frames", type=int, default=0, help="Stop after N frames (0 = all)")
     p_vid.add_argument("--per-frame-fov", action="store_true", help="Re-estimate FOV every frame (for zooming shots)")
+    p_vid.add_argument("--no-audio", action="store_true", help="Drop the input audio track")
     p_vid.add_argument("--no-detector", action="store_true", help="Treat the whole frame as one person")
     p_vid.add_argument("--no-fov", action="store_true", help="Use default FOV instead of MoGe-2")
 
