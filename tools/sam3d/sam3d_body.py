@@ -8,9 +8,9 @@ Models live under D:\\hf_models (WSL: /mnt/d/hf_models, override with SAM3D_HF_R
   moge-2-vitl-normal/      MoGe-2 FOV estimator (model.pt)
 
 Usage:
-  python sam3d_body.py download [--variant dinov3|vith]      # Windows .venv (HF Hub reachable)
-  python sam3d_body.py image --images images --out outputs/sam3d [--variant dinov3] [--no-detector] [--no-fov]
-  python sam3d_body.py video --input clip.mp4 --out outputs/sam3d/clip_white.mp4 [--background black|white|video]
+    python tools/sam3d/sam3d_body.py download [--variant dinov3|vith]      # Windows .venv (HF Hub reachable)
+    python tools/sam3d/sam3d_body.py image --images images --out outputs/sam3d [--variant dinov3] [--no-detector] [--no-fov]
+    python tools/sam3d/sam3d_body.py video --input clip.mp4 --out outputs/sam3d/clip_white.mp4 [--background black|white|video]
 """
 
 import argparse
@@ -59,7 +59,7 @@ def build_estimator(args: argparse.Namespace):
     d = ckpt_dir(args.variant)
     ckpt, mhr = d / "model.ckpt", d / "assets" / "mhr_model.pt"
     if not ckpt.exists():
-        sys.exit(f"Checkpoint not found: {ckpt}. Run `python sam3d_body.py download --variant {args.variant}` first.")
+        sys.exit(f"Checkpoint not found: {ckpt}. Run `python tools/sam3d/sam3d_body.py download --variant {args.variant}` first.")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, model_cfg = load_sam_3d_body(str(ckpt), device=device, mhr_path=str(mhr))

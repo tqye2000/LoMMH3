@@ -11,8 +11,8 @@ torchao
 av
 Pillow
 
-# SAM 3D Body (sam3d_body.py). detectron2, MoGe, utils3d-moge, pipeline and the DINOv3 hub repo
-# are installed from local git clones with --no-deps by install_sam3d_wsl.sh (WSL only).
+# SAM 3D Body (tools/sam3d/sam3d_body.py). detectron2, MoGe, utils3d-moge, pipeline and the DINOv3 hub repo
+# are installed from local git clones with --no-deps by tools/sam3d/install_sam3d_wsl.sh (WSL only).
 torchvision
 pytorch-lightning
 pyrender
