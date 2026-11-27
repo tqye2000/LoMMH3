@@ -9,6 +9,7 @@ accelerate
 peft
 torchao
 av
+imageio-ffmpeg
 Pillow
 
 # SAM 3D Body (tools/sam3d/sam3d_body.py). detectron2, MoGe, utils3d-moge, pipeline and the DINOv3 hub repo

@@ -133,6 +133,10 @@ def launch_check(settings: Settings, request: JobRequest, project_dir: Path) -> 
         return "fail", f"Generator Python not found: {settings.generator_python}"
     if not settings.generator_script.is_file():
         return "fail", f"Generator script not found: {settings.generator_script}"
+    if request.mode == "ref2va" and request.videos:
+        splitter = settings.repo_root / "generate_reference_video.py"
+        if not splitter.is_file():
+            return "fail", f"Reference video splitter not found: {splitter}"
     inputs = [*request.images, *request.videos, *request.audios]
     missing = [item.path for item in inputs if not (project_dir / item.path).is_file()]
     if missing:

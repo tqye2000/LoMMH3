@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # WSL2 / Linux launcher for MiniMax-H3 ref2va with a reference video and a
-# reference image, using single-clip context parallelism.
+# reference image. Videos over 15 s are split, generated sequentially with
+# single-clip context parallelism, and joined with audio.
 #
 # The prompt should use the official ref2va format with "<Picture 1>", "<Video 1>"
 # and "<Audio 1>" (the video's soundtrack) labels.
@@ -18,7 +19,7 @@ export LC_ALL=C.UTF-8 LANG=C.UTF-8
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="${MINIMAX_VENV:-$HOME/minimax-venv}"
 PYTHON="$VENV/bin/python"
-SCRIPT="$ROOT/LoMMH.py"
+SCRIPT="$ROOT/generate_reference_video.py"
 
 [[ -x "$PYTHON" ]] || { echo "Python venv not found at: $PYTHON  (run wsl_setup.sh first)" >&2; exit 1; }
 [[ -f "$SCRIPT" ]] || { echo "Generation script not found at: $SCRIPT" >&2; exit 1; }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import secrets
@@ -126,6 +127,9 @@ def media_labels(project: Project, step: GenerateStep) -> dict[tuple[str, str], 
 
 
 def _clip_errors(clips: list[MediaAsset], noun: str) -> list[str]:
+    if (noun == "video" and len(clips) == 1 and math.isfinite(clips[0].duration_s)
+            and clips[0].duration_s > C.MAX_REFERENCE_CLIP_S):
+        return []
     errors = []
     low = C.MIN_REFERENCE_CLIP_S - C.REFERENCE_CLIP_TOLERANCE_S
     high = C.MAX_REFERENCE_CLIP_S + C.REFERENCE_CLIP_TOLERANCE_S
@@ -198,8 +202,12 @@ def build_command(
 ) -> list[str]:
     req = job.request
     p = req.params
-    cmd = [
-        str(settings.generator_python), str(settings.generator_script),
+    splitter = settings.repo_root / "generate_reference_video.py"
+    cmd = [str(settings.generator_python), str(settings.generator_script)]
+    if req.mode == "ref2va" and req.videos and settings.generator_script.resolve() != splitter.resolve():
+        cmd = [str(settings.generator_python), str(splitter),
+               "--generator-script", str(settings.generator_script)]
+    cmd += [
         "--strategy", p.strategy,
         "--prompt-file", str(job_dir / "prompt.txt"),
         "--frames", str(p.frames),

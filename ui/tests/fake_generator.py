@@ -1,7 +1,7 @@
 """Stand-in for LoMMH.py used by tests: same CLI, no GPU.
 
 Behaviour is selected with FAKE_GEN_MODE:
-  ok (default) | fail | hang | child (spawns a grandchild, then hangs) | release (waits for FAKE_GEN_RELEASE file)
+    ok (default) | full (requested frame count) | fail | hang | child (spawns a grandchild, then hangs) | release (waits for FAKE_GEN_RELEASE file)
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ def main() -> int:
     _progress(args.progress_jsonl, "stage", name="saving")
     out_dir = Path(args.output_dir)
     video = out_dir / args.output
-    _write_video(video)
+    _write_video(video, frames=int(args.frames) if mode == "full" else 6)
     video.with_suffix(".json").write_text(json.dumps({
         "run_id": args.run_id,
         "parameters": {"frames": int(args.frames), "seed": int(args.seed)},

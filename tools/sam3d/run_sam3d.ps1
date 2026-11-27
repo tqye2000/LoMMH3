@@ -18,12 +18,12 @@
 #
 # Setup (once): checkpoint via `.venv\Scripts\python.exe tools\sam3d\sam3d_body.py download`, deps via tools/sam3d/install_sam3d_wsl.sh.
 
-$input_video = "audios/3dancers.mp4"
-$output_video = "outputs/sam3d/3dancers_white.mp4"
+$input_video = "audios/Dance-P.mp4"
+$output_video = "outputs/sam3d/Dance-P_white.mp4"
 
 wsl -d Ubuntu -- bash -lc "cd /mnt/d/TQYE/Experiments/MiniMax && ~/minimax-venv/bin/python tools/sam3d/sam3d_body.py video --input $input_video --out $output_video"
 
-$input_images = "images"
-$output_images = "outputs/sam3d/images"
+#$input_images = "images"
+#$output_images = "outputs/sam3d/images"
 
-wsl -d Ubuntu -- bash -lc "cd /mnt/d/TQYE/Experiments/MiniMax && ~/minimax-venv/bin/python tools/sam3d/sam3d_body.py image --images $input_images --out $output_images"
+#wsl -d Ubuntu -- bash -lc "cd /mnt/d/TQYE/Experiments/MiniMax && ~/minimax-venv/bin/python tools/sam3d/sam3d_body.py image --images $input_images --out $output_images"

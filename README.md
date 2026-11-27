@@ -188,7 +188,7 @@ wsl -d Ubuntu -- bash -lc 'REF_VIDEO=/mnt/d/TQYE/Experiments/MiniMax/project_3/o
 The equivalent direct call is:
 
 ```bash
-~/minimax-venv/bin/python LoMMH.py --strategy context_parallel \
+~/minimax-venv/bin/python generate_reference_video.py --strategy context_parallel \
   --reference-image images/cl.jpg \
   --reference-video project_3/outputs/part1.mp4 \
   --prompt-file project_4/prompt_video_v4_edit.txt \
@@ -199,7 +199,12 @@ The equivalent direct call is:
 
 Notes:
 
-- Keep `--frames` at the source clip's length; the reference video is truncated to the generated frame count. Valid clips are 2–15 s.
+- **Long videos:** the launcher uses [generate_reference_video.py](generate_reference_video.py) to automatically split a single reference video longer than 15 s, run generation once per section, then join the generated video and audio at the requested output path. Sections are at most 345 frames at 24 fps (14.375 s, the model's closest supported maximum to 14.5 s). A final remainder shorter than the model's minimum is redistributed across the last two sections. Generated padding is trimmed before joining; final duration matches the source to within one 24 fps frame.
+- In split mode, `--frames` is overridden per section. The same prompt, images, seed, LoRAs and other options are reused for every section. Generation is sequential and reloads the model each time; visual or audio continuity across boundaries is not guaranteed. Prompts with absolute shot timestamps are not automatically rewritten for each section.
+- Source sections, generated clips and individual run logs remain in a unique `<output-stem>_parts_*` folder beside the output, including after a failure. The joined output's JSON records the section boundaries and paths. No partial joined video replaces an existing output if generation fails.
+- Splitting needs FFmpeg on `PATH` or the portable `imageio-ffmpeg` Python package (included in the root requirements). To install it in WSL: `~/minimax-venv/bin/python -m pip install imageio-ffmpeg`.
+- Videos of 15 s or less use the original single-generation path. Keep `--frames` at the source clip's length; the reference video is truncated to the generated frame count. Valid reference clips are 2–15 s. Calling `LoMMH.py` directly does not enable automatic splitting; multiple simultaneous video references are not supported in split mode.
+- **MiniMax Studio:** a single reference video over 15 s is accepted and split automatically. The queue reports the current section and joining stage, then records the joined result as one take with its full duration. Intermediate section progress stays in the parts folder. Cancelling stops the wrapper and its generator processes. Standalone audio and multiple-video duration limits still apply. Restart an already-running UI after updating; auto-reload is disabled.
 - **Reference video memory:** each reference video is resized to a 768 px short edge by default, independent of `--width`/`--height`, and every frame is encoded. A 704×384 clip is upscaled to 1376×736, which can run out of memory in the conditioner on 48 GB cards. `--reference-video-short-edge 384` keeps such a clip at its native size; raise it if memory allows, since a smaller source gives the model less detail to edit.
 - The source clip's soundtrack is always passed to the model when present.
 
