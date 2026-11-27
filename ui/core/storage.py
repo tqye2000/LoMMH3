@@ -20,6 +20,14 @@ log = logging.getLogger(__name__)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 _ID_RE = re.compile(r"^[a-z]{2,4}_[0-9a-f]{10}$")
+_PROJECT_DIR_RE = re.compile(r"^(?:.+--)?(prj_[0-9a-f]{10})$")
+_SLUG_UNSAFE_RE = re.compile(r"[^\w\-]+")
+
+
+def slugify(name: str, max_len: int = 40) -> str:
+    """A filesystem-safe folder prefix derived from a display name (keeps Unicode letters)."""
+    slug = re.sub(r"-{2,}", "-", _SLUG_UNSAFE_RE.sub("-", name.strip()))
+    return slug[:max_len].strip("-_.")
 
 
 class StorageError(RuntimeError):
@@ -87,6 +95,7 @@ class Store:
         self.projects_dir.mkdir(parents=True, exist_ok=True)
         self.version = 0  # bumped on every change; UI pages poll it
         self._cache: dict[str, Project] = {}
+        self._dirs: dict[str, Path] = {}
         self._lock = threading.RLock()
         self._lock_handle: Any = None
 
@@ -112,23 +121,42 @@ class Store:
         self.version += 1
 
     # -- projects --------------------------------------------------------
+    def _scan_project_dirs(self) -> None:
+        for path in self.projects_dir.iterdir():
+            match = _PROJECT_DIR_RE.match(path.name)
+            if match and path.is_dir():
+                self._dirs.setdefault(match.group(1), path)
+
     def project_dir(self, project_id: str) -> Path:
-        return self.projects_dir / check_id(project_id)
+        """Folder is ``<name-slug>--<id>`` (or just ``<id>`` for older projects)."""
+        check_id(project_id)
+        with self._lock:
+            if project_id not in self._dirs:
+                self._scan_project_dirs()
+            return self._dirs.get(project_id, self.projects_dir / project_id)
 
     def create_project(self, name: str) -> Project:
         now = utc_now()
         project = Project(id=new_id("prj"), name=name, created_utc=now, updated_utc=now)
-        root = self.project_dir(project.id)
+        slug = slugify(name)
+        root = self.projects_dir / (f"{slug}--{project.id}" if slug else project.id)
         for sub in ("prompts", "assets", "jobs", "outputs", "exports"):
             (root / sub).mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._dirs[project.id] = root
         self.save_project(project)
         return project
 
     def list_projects(self) -> list[Project]:
         projects = []
         for path in sorted(self.projects_dir.glob("*/project.json")):
+            match = _PROJECT_DIR_RE.match(path.parent.name)
+            if not match:
+                continue
+            with self._lock:
+                self._dirs.setdefault(match.group(1), path.parent)
             try:
-                projects.append(self.load_project(path.parent.name))
+                projects.append(self.load_project(match.group(1)))
             except StorageError as exc:
                 log.error("Skipping unreadable project: %s", exc)
         return sorted(projects, key=lambda p: p.updated_utc, reverse=True)
